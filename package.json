@@ -1,0 +1,13 @@
+{
+  "name": "samasara",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/index.ts start",
+    "stop": "bun src/index.ts stop",
+    "once": "bun src/index.ts once",
+    "status": "bun src/index.ts status",
+    "dashboard": "bun src/index.ts dashboard",
+    "test": "bun test"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "pollIntervalSeconds": 900,
+  "maxSessionMinutes": 60,
+  "maxHealIterations": 3,
+  "postLandWatchSeconds": 1200,
+  "postLandPollSeconds": 60,
+  "maxLandsPerRepoPerUtcDay": 8,
+  "revertCooldownHours": 6,
+  "dryRun": false,
+  "workDir": "data/work",
+  "dbPath": "data/samasara.sqlite",
+  "logDir": "data/logs",
+  "ref": "main",
+  "ignoreChecks": ["CI-BlackDuck-SCA-Basic / build (push)"],
+  "notifyEmail": "you@example.com",
+  "gitName": "Nathaniel-Xu-1",
+  "gitEmail": "nathaniel.xu@eeoc.gov",
+  "smtp": {
+    "host": "smtp.example.com",
+    "port": 587,
+    "user": "",
+    "password": "",
+    "from": "samasara@example.com"
+  },
+  "repos": [{ "owner": "OWNER", "name": "REPO" }]
+}

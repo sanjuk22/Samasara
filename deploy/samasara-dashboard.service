@@ -1,0 +1,22 @@
+[Unit]
+Description=Samasara private management dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=opc
+Group=opc
+WorkingDirectory=/home/opc/samasara
+Environment=PATH=/home/opc/.bun/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/samasara-dashboard.env
+ExecStart=/usr/local/bin/samasara-bun src/index.ts dashboard
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/opc/samasara
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>Samasara · Dashboard</title>
+    <link rel="stylesheet" href="/style.css">
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to dashboard</a>
+    <div class="shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">Main-branch health &amp; healing</p>
+          <h1>Samasara<span class="brand-dot" aria-hidden="true">.</span></h1>
+        </div>
+        <div class="header-meta">
+          <span class="private-label">Public status view</span>
+          <span class="muted small">Live views refresh every 10 seconds</span>
+        </div>
+      </header>
+
+      <nav class="navigation" aria-label="Dashboard views">
+        <div class="tabs" role="tablist" aria-label="Dashboard views">
+          <button id="tab-status" class="tab" type="button" role="tab" aria-selected="true" aria-controls="view-status" data-view="status">Status</button>
+          <button id="tab-telemetry" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-telemetry" tabindex="-1" data-view="telemetry">Telemetry</button>
+          <button id="tab-repos" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-repos" tabindex="-1" data-view="repos">Repositories</button>
+        </div>
+        <button id="refresh" class="button secondary compact" type="button">Refresh view</button>
+      </nav>
+
+      <main id="main" tabindex="-1">
+        <noscript><p class="notice error">JavaScript is needed to load this dashboard. No third-party scripts are used.</p></noscript>
+        <section id="view-status" role="tabpanel" aria-labelledby="tab-status" tabindex="0">
+          <div class="section-heading">
+            <div><h2>System status</h2><p class="muted">Daemon liveness and the latest recorded activity, kept separate.</p></div>
+            <p id="status-updated" class="timestamp">Not yet loaded</p>
+          </div>
+          <p id="status-notice" class="notice" role="status" aria-live="polite">Loading system status…</p>
+          <div class="summary-grid">
+            <article class="card summary-card">
+              <h3 class="eyebrow">Daemon</h3>
+              <p id="daemon-state" class="metric">Unknown</p>
+              <p id="daemon-description" class="muted">Waiting for a liveness check.</p>
+            </article>
+            <article class="card summary-card">
+              <h3 class="eyebrow">Configured poll interval</h3>
+              <p id="poll-interval" class="metric">—</p>
+              <p class="muted">A configured schedule, not a countdown.</p>
+            </article>
+            <article class="card summary-card">
+              <h3 class="eyebrow">Tracked repositories</h3>
+              <p id="repo-count" class="metric">—</p>
+              <p id="poll-history" class="muted">Waiting for recorded activity.</p>
+            </article>
+          </div>
+          <div class="section-heading subheading"><div><h2>Last known repository state</h2><p class="muted">Historical poll results do not prove the daemon is running or that checks are still passing.</p></div></div>
+          <p id="status-empty" class="empty" hidden>No repositories are configured. Add one in Repositories to start tracking it.</p>
+          <div id="status-repos" class="repo-status-grid"></div>
+        </section>
+
+        <section id="view-telemetry" role="tabpanel" aria-labelledby="tab-telemetry" tabindex="0" hidden>
+          <div class="section-heading">
+            <div><h2>Healing telemetry</h2><p class="muted">Recorded sessions, decisions, and complete proposed diffs.</p></div>
+            <p id="telemetry-updated" class="timestamp">Not yet loaded</p>
+          </div>
+          <div class="telemetry-layout">
+            <section class="card session-panel" aria-labelledby="session-list-heading">
+              <div class="panel-heading"><h3 id="session-list-heading">Recent sessions</h3><span id="telemetry-page" class="muted small">Latest</span></div>
+              <p id="telemetry-notice" class="notice" role="status" aria-live="polite">Loading sessions…</p>
+              <p id="telemetry-empty" class="empty" hidden>No healing sessions have been recorded yet. Sessions appear when the daemon attempts a repair.</p>
+              <ul id="session-list" class="session-list"></ul>
+              <div class="pagination" aria-label="Session pagination">
+                <button id="sessions-latest" type="button" class="button secondary compact" disabled>Latest</button>
+                <button id="sessions-newer" type="button" class="button secondary compact" disabled>Newer</button>
+                <button id="sessions-older" type="button" class="button secondary compact" disabled>Older</button>
+              </div>
+              <p class="muted small pagination-hint">Older pages stay put. Return to Latest for automatic list updates.</p>
+            </section>
+            <section id="session-detail" class="card detail-panel" aria-labelledby="detail-heading">
+              <div class="panel-heading"><h3 id="detail-heading" tabindex="-1">Session details</h3><button id="detail-refresh" class="button secondary compact" type="button" hidden>Refresh detail</button></div>
+              <p id="detail-notice" class="notice" role="status" aria-live="polite" hidden></p>
+              <p id="detail-empty" class="empty">Select a session to inspect its outcome, reasoning, and full diff.</p>
+              <div id="detail-content" hidden>
+                <div class="detail-title"><h4 id="detail-repo"></h4><span id="detail-outcome" class="badge"></span></div>
+                <dl class="facts detail-facts">
+                  <div><dt>Starting commit</dt><dd><code id="detail-sha" class="sha"></code></dd></div>
+                  <div><dt>Started</dt><dd id="detail-started"></dd></div>
+                  <div><dt>Ended</dt><dd id="detail-ended"></dd></div>
+                  <div><dt>Patch accepted</dt><dd id="detail-accepted"></dd></div>
+                  <div><dt>Repair worked</dt><dd id="detail-worked"></dd></div>
+                </dl>
+                <p id="detail-running" class="notice info" hidden>This session is recorded as running. Details refresh every 10 seconds; this is not a daemon liveness signal.</p>
+                <section class="detail-section" aria-labelledby="files-heading"><h4 id="files-heading">Changed files</h4><p id="detail-no-files" class="muted">No changed files recorded.</p><ul id="detail-files" class="file-list"></ul></section>
+                <section class="detail-section" aria-labelledby="reasoning-heading"><h4 id="reasoning-heading">Reasoning</h4><pre id="detail-reasoning" class="reasoning" tabindex="0" aria-label="Session reasoning"></pre></section>
+                <section class="detail-section" aria-labelledby="patch-heading"><h4 id="patch-heading">Full diff</h4><p id="detail-no-patch" class="muted" hidden>No patch has been recorded for this session.</p><pre id="detail-patch" class="diff" tabindex="0" aria-label="Full session diff"></pre></section>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-repos" role="tabpanel" aria-labelledby="tab-repos" tabindex="0" hidden>
+          <div class="section-heading">
+            <div><h2>Repositories</h2><p class="muted">Configuration changes apply on the next poll. A poll already in progress is unchanged.</p></div>
+            <button id="repos-refresh" class="button secondary compact" type="button">Refresh configuration</button>
+          </div>
+          <p id="repos-notice" class="notice" role="status" aria-live="polite">Loading repository configuration…</p>
+          <p id="repos-readonly" class="notice info" hidden>Status and telemetry are public. Adding, editing, or removing repositories requires the allowed Tailscale login.</p>
+          <section class="card global-patterns" aria-labelledby="global-heading">
+            <h3 id="global-heading">Global ignored checks</h3>
+            <p class="muted small">These patterns apply to every repository in addition to its own patterns. Global patterns are read-only here.</p>
+            <ul id="global-patterns" class="pattern-list"></ul>
+            <p id="global-empty" class="muted" hidden>No global ignore patterns.</p>
+          </section>
+          <div class="repositories-layout">
+            <section aria-labelledby="tracked-heading">
+              <div class="panel-heading"><h3 id="tracked-heading">Tracked repositories</h3><span id="repos-total" class="muted small"></span></div>
+              <p id="repos-empty" class="empty" hidden>No repositories yet. Add an owner/name to start tracking.</p>
+              <ul id="repo-list" class="repository-list"></ul>
+              <p class="muted small">Removing a repository stops future tracking. Its historical telemetry is kept.</p>
+            </section>
+            <section id="repo-editor" class="card editor-panel" aria-labelledby="editor-heading">
+              <h3 id="editor-heading">Add repository</h3>
+              <p id="editor-description" class="muted small">Track the repository’s main branch. Authentication is managed outside this dashboard.</p>
+              <form id="repo-form">
+                <fieldset id="repo-fields" disabled>
+                  <legend class="sr-only">Repository configuration</legend>
+                  <label for="repo-name">Repository <span class="muted small">required</span></label>
+                  <input id="repo-name" name="repo" type="text" placeholder="owner/repository" pattern="[^/\s]+/[^/\s]+" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="repo-name-hint" required>
+                  <p id="repo-name-hint" class="field-hint">Use owner/name. Repository identities cannot be renamed here.</p>
+                  <label for="repo-patterns">Repository ignored checks <span class="muted small">optional</span></label>
+                  <textarea id="repo-patterns" name="ignoreChecks" rows="6" placeholder="One pattern per line" autocomplete="off" autocapitalize="none" spellcheck="false" aria-describedby="repo-patterns-hint"></textarea>
+                  <p id="repo-patterns-hint" class="field-hint">One check-name pattern per line. Leave blank to clear repository-specific ignores; global ignores still apply.</p>
+                  <div class="form-actions"><button id="repo-save" class="button primary" type="submit">Add repository</button><button id="repo-cancel" class="button secondary" type="button" hidden>Cancel editing</button></div>
+                </fieldset>
+              </form>
+              <p id="form-notice" class="notice" role="status" aria-live="polite" hidden></p>
+            </section>
+          </div>
+        </section>
+      </main>
+      <footer>Only configured repositories are tracked. Historical records are not live checks.</footer>
+    </div>
+
+    <dialog id="delete-dialog" aria-labelledby="delete-heading" aria-describedby="delete-description">
+      <h2 id="delete-heading">Remove repository?</h2>
+      <p id="delete-repo" class="dialog-repo"></p>
+      <p id="delete-description" class="muted">This stops future tracking after the current poll. Historical telemetry will be kept.</p>
+      <p id="delete-notice" class="notice" role="status" aria-live="polite" hidden></p>
+      <div class="form-actions dialog-actions"><button id="delete-cancel" class="button secondary" type="button" autofocus>Keep repository</button><button id="delete-confirm" class="button danger" type="button">Remove repository</button><button id="delete-reload" class="button secondary" type="button" hidden>Refresh configuration</button></div>
+    </dialog>
+  </body>
+</html>

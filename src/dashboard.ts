@@ -10,7 +10,7 @@ import {
   removeTrackedRepo,
   setRepoIgnores,
 } from "./config";
-import { openDb, recentSessions, sessionById } from "./db";
+import { openDb, recentSessions, sessionById, telemetryTotals } from "./db";
 import type { SessionRow } from "./db";
 import { applicationStatus, healReport } from "./management";
 
@@ -128,9 +128,17 @@ export async function startDashboard() {
             const rawBefore = url.searchParams.get("before");
             const sessions = recentSessions(db, 21, rawBefore == null ? undefined : positiveId(rawBefore));
             const page = sessions.slice(0, 20);
+            const totals = telemetryTotals(db);
             return Response.json({
               sessions: page.map((session) => report(session, false)),
               nextBefore: sessions.length > 20 ? page[page.length - 1].id : null,
+              totals: {
+                sessions: totals.sessions,
+                attempts: totals.attempts,
+                tokensIn: totals.tokens_in,
+                tokensOut: totals.tokens_out,
+                durationMs: totals.duration_ms,
+              },
             }, { headers: SECURITY_HEADERS });
           }
           const sessionMatch = /^\/api\/telemetry\/([^/]+)$/.exec(path);

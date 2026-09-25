@@ -48,6 +48,14 @@ export type LandRow = {
   at: number;
 };
 
+export type TelemetryTotals = {
+  sessions: number;
+  attempts: number;
+  tokens_in: number;
+  tokens_out: number;
+  duration_ms: number;
+};
+
 export type FinishFields = {
   end_sha?: string | null;
   outcome?: string;
@@ -237,6 +245,26 @@ export function recentSessions(db: Database, limit = 10, beforeId?: number): Ses
     return db.prepare("SELECT * FROM sessions WHERE id < ? ORDER BY id DESC LIMIT ?").all(beforeId, limit) as SessionRow[];
   }
   return db.prepare("SELECT * FROM sessions ORDER BY id DESC LIMIT ?").all(limit) as SessionRow[];
+}
+
+export function telemetryTotals(db: Database): TelemetryTotals {
+  return db
+    .prepare(
+      `SELECT
+         COUNT(*) AS sessions,
+         COALESCE(SUM(attempts), 0) AS attempts,
+         COALESCE(SUM(tokens_in), 0) AS tokens_in,
+         COALESCE(SUM(tokens_out), 0) AS tokens_out,
+         COALESCE(SUM(
+           CASE
+             WHEN ended_at IS NOT NULL AND ended_at >= started_at
+             THEN ended_at - started_at
+             ELSE 0
+           END
+         ), 0) AS duration_ms
+       FROM sessions`,
+    )
+    .get() as TelemetryTotals;
 }
 
 export function priorPushedSessions(

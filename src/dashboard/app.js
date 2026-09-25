@@ -32,6 +32,7 @@
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short",
   });
+  const numberFormat = new Intl.NumberFormat();
   const tones = {
     green: "positive", landed: "positive", red: "negative", gave_up: "negative",
     reverted: "negative", denied_policy: "negative", error: "negative",
@@ -61,6 +62,26 @@
     if (value == null) return "Not recorded";
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? "Unknown timestamp" : dateFormat.format(date);
+  }
+
+  function count(value) {
+    if (value == null) return "—";
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? numberFormat.format(parsed) : "—";
+  }
+
+  function duration(value) {
+    if (value == null) return "In progress";
+    const milliseconds = Number(value);
+    if (!Number.isFinite(milliseconds) || milliseconds < 0) return "Not recorded";
+    const totalSeconds = Math.floor(milliseconds / 1000);
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (totalMinutes < 60) return `${totalMinutes}m ${seconds}s`;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours}h ${minutes}m`;
   }
 
   function outcome(node, value) {
@@ -268,6 +289,14 @@
       : "No older sessions on this page. Use Newer or Latest to return.");
   }
 
+  function renderTelemetryTotals(totals) {
+    const values = totals || {};
+    text($("telemetry-total-attempts"), count(values.attempts));
+    text($("telemetry-total-input-tokens"), count(values.tokensIn));
+    text($("telemetry-total-output-tokens"), count(values.tokensOut));
+    text($("telemetry-total-duration"), duration(values.durationMs));
+  }
+
   async function loadTelemetry(pages = state.pages, quiet = false) {
     if (state.telemetryBusy) return;
     if (quiet && $("session-list").contains(document.activeElement)) return;
@@ -277,6 +306,7 @@
     try {
       const before = pages[pages.length - 1];
       const data = await api(`/api/telemetry${before == null ? "" : `?before=${encodeURIComponent(before)}`}`);
+      renderTelemetryTotals(data.totals);
       state.pages = [...pages];
       state.nextBefore = data.nextBefore;
       renderSessions(data.sessions);
@@ -313,6 +343,10 @@
     text($("detail-sha"), report.sha || "Not recorded");
     text($("detail-started"), timestamp(report.startedAt));
     text($("detail-ended"), report.endedAt == null ? "No end recorded" : timestamp(report.endedAt));
+    text($("detail-attempts"), count(report.attempts));
+    text($("detail-input-tokens"), count(report.tokensIn));
+    text($("detail-output-tokens"), count(report.tokensOut));
+    text($("detail-duration"), duration(report.durationMs));
     text($("detail-accepted"), report.accepted);
     text($("detail-worked"), report.worked);
     $("detail-running").hidden = report.outcome !== "running";

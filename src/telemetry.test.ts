@@ -81,6 +81,26 @@ test("landed green reports accepted and worked", () => {
   expect(formatHealReport(r, { fullPatch: false })).toContain("accepted: yes (pushed)");
 });
 
+test("heal report includes usage and duration", () => {
+  const report = reportFromSession({
+    session: session({
+      started_at: 1_000,
+      ended_at: 3_500,
+      attempts: 2,
+      tokens_in: 120,
+      tokens_out: 40,
+    }),
+    events: [],
+  });
+
+  expect(report).toMatchObject({
+    attempts: 2,
+    tokensIn: 120,
+    tokensOut: 40,
+    durationMs: 2_500,
+  });
+});
+
 test("denied_policy is not accepted", () => {
   const r = reportFromSession({
     session: session({ outcome: "denied_policy", failure_class: "skip-test", end_sha: null }),
@@ -119,6 +139,10 @@ test("prior heal context tells the healer to check accepted patches for regressi
       accepted: "yes (pushed)",
       worked: "yes (main green)",
       reasoning: "Reproduced yes. The vulnerable dependency was pinned.",
+      attempts: 1,
+      tokensIn: 100,
+      tokensOut: 20,
+      durationMs: 1_000,
     },
   ]);
 

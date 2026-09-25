@@ -74,7 +74,7 @@ bun test
 
 ## Telemetry
 
-Local SQLite only. Nothing is shipped off-box. Use the dashboard Telemetry tab, or:
+Healer diagnostics remain in local SQLite. `infra/main.bicep` also deploys the shared Azure Log Analytics workspace, direct Data Collection Rule, and `SamasaraEvent_CL` table used by instrumented applications. AI interaction records contain hashes and usage metadata only—never prompts, responses, email addresses, or usernames. Application workloads publish with managed identity to the `Custom-SamasaraEvent` stream; set `deployRoleAssignments=true` with `eventPublisherPrincipalIds` when an Owner or User Access Administrator deploys the template.
 
 ```bash
 bun src/index.ts telemetry

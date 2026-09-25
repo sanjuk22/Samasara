@@ -4,16 +4,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const roots: string[] = [];
-const pids: number[] = [];
+const processes: Array<{ pid: number; exited: Promise<number> }> = [];
 
-afterEach(() => {
-  for (const pid of pids.splice(0)) {
+afterEach(async () => {
+  const running = processes.splice(0);
+  for (const proc of running) {
     try {
-      process.kill(pid, "SIGKILL");
+      process.kill(proc.pid, "SIGKILL");
     } catch {
       /* already stopped */
     }
   }
+  await Promise.all(running.map((proc) => proc.exited.catch(() => -1)));
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -71,7 +73,7 @@ async function startDashboard(env: Record<string, string>) {
     stdout: "pipe",
     stderr: "pipe",
   });
-  pids.push(proc.pid);
+  processes.push(proc);
   await waitForListening(proc);
   return Number(env.SAMASARA_DASHBOARD_PORT);
 }
@@ -97,6 +99,16 @@ test("public origin allows anonymous reads and blocks writes", async () => {
   const stranger = await curl(port, "/api/status", { Host: host, "Tailscale-User-Login": "other@example.com" });
   expect(stranger.status).toBe(200);
   expect(stranger.body.canEdit).toBe(false);
+
+  const telemetry = await curl(port, "/api/telemetry", { Host: host });
+  expect(telemetry.status).toBe(200);
+  expect(telemetry.body.totals).toEqual({
+    sessions: 0,
+    attempts: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    durationMs: 0,
+  });
 
   const csrf = await curl(port, "/api/csrf", { Host: host });
   expect(csrf.status).toBe(403);

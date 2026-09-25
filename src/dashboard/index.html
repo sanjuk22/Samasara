@@ -66,6 +66,28 @@
             <div><h2>Healing telemetry</h2><p class="muted">Recorded sessions, decisions, and complete proposed diffs.</p></div>
             <p id="telemetry-updated" class="timestamp">Not yet loaded</p>
           </div>
+          <div class="summary-grid telemetry-summary" aria-label="Healing telemetry totals">
+            <article class="card summary-card">
+              <h3 class="eyebrow">Healing attempts</h3>
+              <p id="telemetry-total-attempts" class="metric">—</p>
+              <p class="muted">All recorded healer attempts.</p>
+            </article>
+            <article class="card summary-card">
+              <h3 class="eyebrow">Input tokens</h3>
+              <p id="telemetry-total-input-tokens" class="metric">—</p>
+              <p class="muted">OMP input tokens across all sessions.</p>
+            </article>
+            <article class="card summary-card">
+              <h3 class="eyebrow">Output tokens</h3>
+              <p id="telemetry-total-output-tokens" class="metric">—</p>
+              <p class="muted">OMP output tokens across all sessions.</p>
+            </article>
+            <article class="card summary-card">
+              <h3 class="eyebrow">Healing time</h3>
+              <p id="telemetry-total-duration" class="metric">—</p>
+              <p class="muted">Completed session wall-clock time.</p>
+            </article>
+          </div>
           <div class="telemetry-layout">
             <section class="card session-panel" aria-labelledby="session-list-heading">
               <div class="panel-heading"><h3 id="session-list-heading">Recent sessions</h3><span id="telemetry-page" class="muted small">Latest</span></div>
@@ -91,6 +113,10 @@
                   <div><dt>Ended</dt><dd id="detail-ended"></dd></div>
                   <div><dt>Patch accepted</dt><dd id="detail-accepted"></dd></div>
                   <div><dt>Repair worked</dt><dd id="detail-worked"></dd></div>
+                  <div><dt>Attempts</dt><dd id="detail-attempts"></dd></div>
+                  <div><dt>Input tokens</dt><dd id="detail-input-tokens"></dd></div>
+                  <div><dt>Output tokens</dt><dd id="detail-output-tokens"></dd></div>
+                  <div><dt>Duration</dt><dd id="detail-duration"></dd></div>
                 </dl>
                 <p id="detail-running" class="notice info" hidden>This session is recorded as running. Details refresh every 10 seconds; this is not a daemon liveness signal.</p>
                 <section class="detail-section" aria-labelledby="files-heading"><h4 id="files-heading">Changed files</h4><p id="detail-no-files" class="muted">No changed files recorded.</p><ul id="detail-files" class="file-list"></ul></section>

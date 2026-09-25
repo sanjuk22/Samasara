@@ -11,6 +11,10 @@ export type HealReport = {
   accepted: string;
   worked: string;
   reasoning: string | null;
+  attempts: number;
+  tokensIn: number;
+  tokensOut: number;
+  durationMs: number | null;
 };
 
 export function extractOmpReasoning(jsonl: string): string | null {
@@ -156,6 +160,10 @@ export function reportFromSession(opts: {
     accepted,
     worked,
     reasoning,
+    attempts: s.attempts,
+    tokensIn: s.tokens_in,
+    tokensOut: s.tokens_out,
+    durationMs: s.ended_at == null ? null : Math.max(0, s.ended_at - s.started_at),
   };
 }
 
@@ -165,6 +173,9 @@ export function formatHealReport(r: HealReport, opts: { fullPatch: boolean }): s
     `  patch: ${r.files.length > 0 ? r.files.join(", ") : r.patch ? "(unnamed diff)" : "(none)"}`,
     `  accepted: ${r.accepted}`,
     `  worked: ${r.worked}`,
+    `  attempts: ${r.attempts}`,
+    `  tokens: ${r.tokensIn} input / ${r.tokensOut} output`,
+    `  duration: ${r.durationMs == null ? "(running)" : `${r.durationMs} ms`}`,
     `  reasoning: ${r.reasoning ?? "(none)"}`,
   ];
   if (opts.fullPatch) {

@@ -40,6 +40,15 @@ export type EventRow = {
   payload_json: string;
 };
 
+export type MonitoringOutboxRow = {
+  id: number;
+  created_at: number;
+  event_json: string;
+  attempt_count: number;
+  next_attempt_at: number;
+  last_error: string | null;
+};
+
 export type LandRow = {
   id: number;
   session_id: number;
@@ -84,8 +93,8 @@ const FINISH_COLS = new Set([
   "error",
 ]);
 
-export function openDb(config: Config): Database {
-  mkdirSync(dirname(config.dbPath), { recursive: true });
+export function openDb(config: Pick<Config, "dbPath">): Database {
+  if (config.dbPath !== ":memory:") mkdirSync(dirname(config.dbPath), { recursive: true });
   const db = new Database(config.dbPath);
   db.exec("pragma journal_mode = WAL");
   db.exec(`
@@ -125,6 +134,15 @@ CREATE TABLE IF NOT EXISTS events (
   event TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id)
+);
+
+CREATE TABLE IF NOT EXISTS monitoring_outbox (
+  id INTEGER PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  event_json TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT
 );
 
 CREATE TABLE IF NOT EXISTS lands (
@@ -179,6 +197,47 @@ export function appendEvent(db: Database, sessionId: number, event: string, payl
     event,
     JSON.stringify(payload ?? {}),
   );
+}
+
+export function enqueueMonitoringEvent(db: Database, event: unknown, at = Date.now()): number {
+  const result = db.prepare(
+    "INSERT INTO monitoring_outbox (created_at, event_json, next_attempt_at) VALUES (?, ?, ?)",
+  ).run(at, JSON.stringify(event), at);
+  return Number(result.lastInsertRowid);
+}
+
+export function pendingMonitoringEvents(db: Database, now = Date.now(), limit = 100): MonitoringOutboxRow[] {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error("invalid monitoring outbox limit");
+  return db.prepare(
+    "SELECT * FROM monitoring_outbox WHERE next_attempt_at <= ? ORDER BY id ASC LIMIT ?",
+  ).all(now, limit) as MonitoringOutboxRow[];
+}
+
+export function deleteMonitoringEvents(db: Database, ids: readonly number[]): void {
+  if (ids.length === 0) return;
+  const remove = db.prepare("DELETE FROM monitoring_outbox WHERE id = ?");
+  db.transaction((values: readonly number[]) => {
+    for (const id of values) remove.run(id);
+  })(ids);
+}
+
+export function deferMonitoringEvents(
+  db: Database,
+  rows: readonly MonitoringOutboxRow[],
+  error: string,
+  now = Date.now(),
+): void {
+  if (rows.length === 0) return;
+  const update = db.prepare(
+    "UPDATE monitoring_outbox SET attempt_count = attempt_count + 1, next_attempt_at = ?, last_error = ? WHERE id = ?",
+  );
+  db.transaction((values: readonly MonitoringOutboxRow[]) => {
+    for (const row of values) {
+      const exponent = Math.min(row.attempt_count, 12);
+      const delayMs = Math.min(3_600_000, 1_000 * 2 ** exponent);
+      update.run(now + delayMs, error.slice(0, 500), row.id);
+    }
+  })(rows);
 }
 
 export function insertLand(

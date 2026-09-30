@@ -1,3 +1,11 @@
+import type { Database } from "bun:sqlite";
+import {
+  deferMonitoringEvents,
+  deleteMonitoringEvents,
+  enqueueMonitoringEvent,
+  pendingMonitoringEvents,
+} from "./db";
+
 export const MONITORING_SCHEMA_VERSION = 1 as const;
 
 export const MONITORING_EVENT_NAMES = [
@@ -276,6 +284,21 @@ export function createMonitoringEvent(
     }
     totalTokens = calculatedTotal;
   }
+  const userIdHash = optionalHash(context.userIdHash, "userIdHash");
+  const sessionId = optionalText(context.sessionId, "sessionId", 128);
+  const traceId = optionalText(context.traceId, "traceId", 128);
+  const feature = optionalIdentifier(input.feature, "feature");
+  const result = optionalEnum<MonitoringResult>(input.result, "result", RESULTS);
+  const durationMs = optionalNonnegativeInteger(input.durationMs, "durationMs");
+  const model = optionalText(input.model, "model", 128);
+  const questionHash = optionalHash(input.questionHash, "questionHash");
+  if (eventName === "ai_interaction") {
+    const required = { userIdHash, sessionId, traceId, feature, result, durationMs, model, promptTokens, completionTokens, totalTokens, questionHash };
+    const missing = Object.entries(required).filter(([, value]) => value === undefined).map(([field]) => field);
+    if (missing.length > 0) {
+      throw new MonitoringContractError(`ai_interaction is missing required fields: ${missing.join(", ")}`);
+    }
+  }
 
   const event: MonitoringEvent = {
     schemaVersion: MONITORING_SCHEMA_VERSION,
@@ -283,23 +306,23 @@ export function createMonitoringEvent(
     eventName,
     application: requiredIdentifier(context.application, "application"),
     environment,
-    ...optionalProperty("userIdHash", optionalHash(context.userIdHash, "userIdHash")),
-    ...optionalProperty("sessionId", optionalText(context.sessionId, "sessionId", 128)),
-    ...optionalProperty("traceId", optionalText(context.traceId, "traceId", 128)),
+    ...optionalProperty("userIdHash", userIdHash),
+    ...optionalProperty("sessionId", sessionId),
+    ...optionalProperty("traceId", traceId),
     ...optionalProperty("sourceTimestamp", optionalTimestamp(input.sourceTimestamp, "sourceTimestamp")),
     ...optionalProperty("route", optionalRoute(input.route)),
-    ...optionalProperty("feature", optionalIdentifier(input.feature, "feature")),
-    ...optionalProperty("result", optionalEnum<MonitoringResult>(input.result, "result", RESULTS)),
-    ...optionalProperty("durationMs", optionalNonnegativeInteger(input.durationMs, "durationMs")),
+    ...optionalProperty("feature", feature),
+    ...optionalProperty("result", result),
+    ...optionalProperty("durationMs", durationMs),
     ...optionalProperty("repository", optionalRepository(input.repository)),
     ...optionalProperty("workflowName", optionalText(input.workflowName, "workflowName")),
     ...optionalProperty("workflowRunId", optionalText(input.workflowRunId, "workflowRunId", 64)),
     ...optionalProperty("commitSha", optionalCommitSha(input.commitSha)),
-    ...optionalProperty("model", optionalText(input.model, "model", 128)),
+    ...optionalProperty("model", model),
     ...optionalProperty("promptTokens", promptTokens),
     ...optionalProperty("completionTokens", completionTokens),
     ...optionalProperty("totalTokens", totalTokens),
-    ...optionalProperty("questionHash", optionalHash(input.questionHash, "questionHash")),
+    ...optionalProperty("questionHash", questionHash),
     ...optionalProperty("attributes", optionalAttributes(input.attributes)),
   };
   return Object.freeze(event);
@@ -307,4 +330,153 @@ export function createMonitoringEvent(
 
 function optionalProperty<K extends string, V>(key: K, value: V | undefined): { [P in K]?: V } {
   return value === undefined ? {} : { [key]: value } as { [P in K]?: V };
+}
+
+export type AzureMonitoringSettings = Readonly<{
+  logsIngestionEndpoint: string;
+  dataCollectionRuleId: string;
+  managedIdentityClientId?: string;
+}>;
+
+export type MonitoringFlushResult = Readonly<{
+  delivered: number;
+  deferred: number;
+  error?: string;
+}>;
+
+type MonitoringFlushOptions = Readonly<{
+  env?: Readonly<Record<string, string | undefined>>;
+  fetch?: typeof fetch;
+  accessToken?: string;
+  now?: Date;
+}>;
+
+export function monitoringEnvironment(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): MonitoringEnvironment {
+  const value = env.SAMASARA_ENVIRONMENT?.trim() || "local";
+  if (ENVIRONMENTS[value as MonitoringEnvironment] !== true) {
+    throw new MonitoringContractError("SAMASARA_ENVIRONMENT must be local, dev, test, or prod");
+  }
+  return value as MonitoringEnvironment;
+}
+
+export function azureMonitoringSettings(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): AzureMonitoringSettings | null {
+  const endpoint = env.SAMASARA_AZURE_LOGS_ENDPOINT?.trim() ?? "";
+  const ruleId = env.SAMASARA_AZURE_DCR_ID?.trim() ?? "";
+  if (endpoint === "" && ruleId === "") return null;
+  if (endpoint === "" || ruleId === "") {
+    throw new MonitoringContractError(
+      "SAMASARA_AZURE_LOGS_ENDPOINT and SAMASARA_AZURE_DCR_ID must be configured together",
+    );
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new MonitoringContractError("SAMASARA_AZURE_LOGS_ENDPOINT must be a valid HTTPS URL");
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new MonitoringContractError("SAMASARA_AZURE_LOGS_ENDPOINT must be a valid HTTPS URL");
+  }
+  if (!/^dcr-[a-z0-9]+$/i.test(ruleId)) {
+    throw new MonitoringContractError("SAMASARA_AZURE_DCR_ID must be an immutable DCR ID");
+  }
+  const managedIdentityClientId = env.SAMASARA_AZURE_MANAGED_IDENTITY_CLIENT_ID?.trim() || undefined;
+  return {
+    logsIngestionEndpoint: parsed.origin,
+    dataCollectionRuleId: ruleId,
+    ...optionalProperty("managedIdentityClientId", managedIdentityClientId),
+  };
+}
+
+async function managedIdentityAccessToken(
+  settings: AzureMonitoringSettings,
+  request: typeof fetch,
+): Promise<string> {
+  const url = new URL("http://169.254.169.254/metadata/identity/oauth2/token");
+  url.searchParams.set("api-version", "2018-02-01");
+  url.searchParams.set("resource", "https://monitor.azure.com/");
+  if (settings.managedIdentityClientId) url.searchParams.set("client_id", settings.managedIdentityClientId);
+  const response = await request(url, {
+    headers: { Metadata: "true" },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) throw new Error(`managed identity token request failed with HTTP ${response.status}`);
+  const body: unknown = await response.json();
+  if (!body || typeof body !== "object" || !("access_token" in body) || typeof body.access_token !== "string") {
+    throw new Error("managed identity token response did not contain an access token");
+  }
+  return body.access_token;
+}
+
+export function queueMonitoringEvent(
+  db: Database,
+  context: MonitoringContext,
+  input: MonitoringEventInput,
+  now: Date = new Date(),
+): MonitoringEvent {
+  const event = createMonitoringEvent(context, input, now);
+  enqueueMonitoringEvent(db, event, now.getTime());
+  return event;
+}
+
+export async function flushMonitoringOutbox(
+  db: Database,
+  options: MonitoringFlushOptions = {},
+): Promise<MonitoringFlushResult> {
+  const now = options.now ?? new Date();
+  const rows = pendingMonitoringEvents(db, now.getTime());
+  if (rows.length === 0) return { delivered: 0, deferred: 0 };
+
+  let settings: AzureMonitoringSettings | null;
+  try {
+    settings = azureMonitoringSettings(options.env);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    deferMonitoringEvents(db, rows, message, now.getTime());
+    return { delivered: 0, deferred: rows.length, error: message };
+  }
+  if (settings === null) return { delivered: 0, deferred: 0 };
+
+  try {
+    const request = options.fetch ?? fetch;
+    const accessToken = options.accessToken ?? await managedIdentityAccessToken(settings, request);
+    const events = rows.map((row) => JSON.parse(row.event_json) as MonitoringEvent);
+    const endpoint = new URL(
+      `/dataCollectionRules/${encodeURIComponent(settings.dataCollectionRuleId)}/streams/Custom-SamasaraEvent`,
+      settings.logsIngestionEndpoint,
+    );
+    endpoint.searchParams.set("api-version", "2023-01-01");
+    const response = await request(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(events),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`Azure Monitor ingestion failed with HTTP ${response.status}`);
+    deleteMonitoringEvents(db, rows.map((row) => row.id));
+    return { delivered: rows.length, deferred: 0 };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    deferMonitoringEvents(db, rows, message, now.getTime());
+    return { delivered: 0, deferred: rows.length, error: message };
+  }
+}
+
+export async function recordMonitoringEvent(
+  db: Database,
+  context: MonitoringContext,
+  input: MonitoringEventInput,
+  options: MonitoringFlushOptions = {},
+): Promise<{ event: MonitoringEvent; flush: MonitoringFlushResult }> {
+  const now = options.now ?? new Date();
+  const event = queueMonitoringEvent(db, context, input, now);
+  const flush = await flushMonitoringOutbox(db, { ...options, now });
+  return { event, flush };
 }

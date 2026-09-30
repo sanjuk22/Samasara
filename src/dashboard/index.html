@@ -24,11 +24,11 @@
 
       <nav class="navigation" aria-label="Dashboard views">
         <div class="tabs" role="tablist" aria-label="Dashboard views">
-          <button id="tab-status" class="tab" type="button" role="tab" aria-selected="true" aria-controls="view-status" data-view="status">Status</button>
-          <button id="tab-telemetry" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-telemetry" tabindex="-1" data-view="telemetry">Telemetry</button>
-          <button id="tab-repos" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-repos" tabindex="-1" data-view="repos">Repositories</button>
+          <button id="tab-status" class="tab" type="button" role="tab" aria-selected="true" aria-controls="view-status" data-view="status" data-telemetry-event="dashboard.status.opened">Status</button>
+          <button id="tab-telemetry" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-telemetry" tabindex="-1" data-view="telemetry" data-telemetry-event="dashboard.telemetry.opened">Telemetry</button>
+          <button id="tab-repos" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-repos" tabindex="-1" data-view="repos" data-telemetry-event="dashboard.repositories.opened">Repositories</button>
         </div>
-        <button id="refresh" class="button secondary compact" type="button">Refresh view</button>
+        <button id="refresh" class="button secondary compact" type="button" data-telemetry-event="dashboard.refreshed">Refresh view</button>
       </nav>
 
       <main id="main" tabindex="-1">
@@ -102,7 +102,7 @@
               <p class="muted small pagination-hint">Older pages stay put. Return to Latest for automatic list updates.</p>
             </section>
             <section id="session-detail" class="card detail-panel" aria-labelledby="detail-heading">
-              <div class="panel-heading"><h3 id="detail-heading" tabindex="-1">Session details</h3><button id="detail-refresh" class="button secondary compact" type="button" hidden>Refresh detail</button></div>
+              <div class="panel-heading"><h3 id="detail-heading" tabindex="-1">Session details</h3><button id="detail-refresh" class="button secondary compact" type="button" data-telemetry-event="dashboard.refreshed" hidden>Refresh detail</button></div>
               <p id="detail-notice" class="notice" role="status" aria-live="polite" hidden></p>
               <p id="detail-empty" class="empty">Select a session to inspect its outcome, reasoning, and full diff.</p>
               <div id="detail-content" hidden>
@@ -130,7 +130,7 @@
         <section id="view-repos" role="tabpanel" aria-labelledby="tab-repos" tabindex="0" hidden>
           <div class="section-heading">
             <div><h2>Repositories</h2><p class="muted">Configuration changes apply on the next poll. A poll already in progress is unchanged.</p></div>
-            <button id="repos-refresh" class="button secondary compact" type="button">Refresh configuration</button>
+            <button id="repos-refresh" class="button secondary compact" type="button" data-telemetry-event="dashboard.refreshed">Refresh configuration</button>
           </div>
           <p id="repos-notice" class="notice" role="status" aria-live="polite">Loading repository configuration…</p>
           <p id="repos-readonly" class="notice info" hidden>Status and telemetry are public. Adding, editing, or removing repositories requires the allowed Tailscale login.</p>

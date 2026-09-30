@@ -29,6 +29,7 @@ import { runSession } from "./session";
 import { formatHealReport } from "./telemetry";
 import { applicationStatus, healReport, isSamasaraProcess, LOCK_PATH, lockPid, processIsAlive } from "./management";
 import { startDashboard } from "./dashboard";
+import { flushMonitoringOutbox } from "./observability";
 
 const USAGE = `usage: bun src/index.ts <start|stop|once|status|telemetry|dashboard|notify-test|repo>
   start
@@ -47,6 +48,8 @@ export async function tick(
   token: string,
   opts: { force?: boolean } = {},
 ): Promise<void> {
+  const monitoring = await flushMonitoringOutbox(db);
+  if (monitoring.error) console.error(`monitoring flush deferred ${monitoring.error}`);
   for (const repo of config.repos) {
     const key = repoKey(repo);
     const t0 = Date.now();

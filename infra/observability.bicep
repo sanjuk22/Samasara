@@ -500,5 +500,6 @@ output dataCollectionRuleResourceId string = dataCollectionRule.id
 output dataCollectionRuleImmutableId string = dataCollectionRule.properties.immutableId
 output logsIngestionEndpoint string = dataCollectionEndpoint.properties.logsIngestion.endpoint
 output runtimeIdentityResourceId string = runtimeIdentity.id
+output runtimeIdentityClientId string = runtimeIdentity.properties.clientId
 output keyVaultName string = keyVault.name
 output archiveStorageAccountName string = archiveStorage.name

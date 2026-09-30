@@ -41,13 +41,13 @@ The healer daemon and the dashboard are separate processes. The dashboard listen
 
 URL: `https://samasara.tail22214a.ts.net/`
 
-Anyone can open that URL to view status and telemetry. Adding, editing, or removing repositories still requires Tailscale identity `nxu981@gmail.com` (install from https://tailscale.com/download and join this tailnet). Do not put GitHub or SMTP secrets in the dashboard env file.
+Anyone can open that URL to view status and telemetry. Adding, editing, or removing repositories still requires Tailscale identity `nxu981@gmail.com` (install from https://tailscale.com/download and join this tailnet). Semantic dashboard events are accepted only for that authenticated identity; anonymous views are not recorded. Do not put GitHub or SMTP secrets in the dashboard env file.
 
 ```bash
 bun src/index.ts dashboard
 ```
 
-Production unit: `deploy/samasara-dashboard.service` → `samasara-dashboard.service`. Access settings live in `/etc/samasara-dashboard.env` (`SAMASARA_DASHBOARD_ORIGIN`, `SAMASARA_DASHBOARD_USER`).
+Production unit: `deploy/samasara-dashboard.service` → `samasara-dashboard.service`. Access settings live in `/etc/samasara-dashboard.env` (`SAMASARA_DASHBOARD_ORIGIN`, `SAMASARA_DASHBOARD_USER`). Set `SAMASARA_TELEMETRY_HASH_KEY` there to a stable random value of at least 32 characters; it HMAC-hashes the Tailscale login before telemetry is queued and must remain secret.
 
 ## Email
 
@@ -76,6 +76,21 @@ bun test
 
 Healer diagnostics remain in local SQLite. `infra/main.bicep` also deploys the shared Azure Log Analytics workspace, direct Data Collection Rule, and `SamasaraEvent_CL` table used by instrumented applications. AI interaction records contain hashes and usage metadata only—never prompts, responses, email addresses, or usernames. Application workloads publish with managed identity to the `Custom-SamasaraEvent` stream; set `deployRoleAssignments=true` with `eventPublisherPrincipalIds` when an Owner or User Access Administrator deploys the template.
 
+Samasara queues one `ai_interaction` after every OMP healer invocation. The record includes the repository, feature, result, latency, model when OMP reports it, input/output/total tokens, OMP conversation id, trace id, service-identity hash, and a SHA-256 hash of the complete healer question. Raw failed-job logs, prompts, and responses are never copied into the monitoring event. Failed deliveries remain in SQLite with exponential retry backoff and are retried at the next daemon tick.
+
+The dashboard records only allowlisted semantic controls—view opens, session selection, refreshes, and successful repository changes—through `feature_clicked` events. It never captures arbitrary DOM clicks, labels, repository names, or form content. Browser events use `sendBeacon` with a keepalive `fetch` fallback; the server validates the allowlist, supplies its own timestamp and trace ID, hashes the authenticated identity, and queues the event in the durable outbox.
+
+Configure the daemon from the Bicep deployment outputs; these values are identifiers, not secrets:
+
+```bash
+SAMASARA_ENVIRONMENT=prod
+SAMASARA_AZURE_LOGS_ENDPOINT='<logsIngestionEndpoint>'
+SAMASARA_AZURE_DCR_ID='<dataCollectionRuleImmutableId>'
+SAMASARA_AZURE_MANAGED_IDENTITY_CLIENT_ID='<runtimeIdentityClientId>'
+```
+
+The VM must have that user-assigned identity attached. Its DCR `Monitoring Metrics Publisher` role is created when the Bicep deployment uses `deployRoleAssignments=true`.
+
 ```bash
 bun src/index.ts telemetry
 bun src/index.ts telemetry 2
@@ -85,7 +100,7 @@ bun src/index.ts telemetry 2
 
 | Path | What |
 | --- | --- |
-| `data/samasara.sqlite` | WAL SQLite: `polls`, `sessions`, `events`, `lands` |
+| `data/samasara.sqlite` | WAL SQLite: `polls`, `sessions`, `events`, `lands`, durable `monitoring_outbox` |
 | `data/logs/*.omp.jsonl` | raw OMP `--mode json` stdout per session |
 | `data/logs/*__*.log` | redacted failed Actions logs attached to the healer |
 | `bun src/index.ts status` | last poll + last session per tracked repo |

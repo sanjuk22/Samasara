@@ -86,5 +86,6 @@ output dataCollectionRuleResourceId string = observability.outputs.dataCollectio
 output dataCollectionRuleImmutableId string = observability.outputs.dataCollectionRuleImmutableId
 output logsIngestionEndpoint string = observability.outputs.logsIngestionEndpoint
 output runtimeIdentityResourceId string = observability.outputs.runtimeIdentityResourceId
+output runtimeIdentityClientId string = observability.outputs.runtimeIdentityClientId
 output keyVaultName string = observability.outputs.keyVaultName
 output archiveStorageAccountName string = observability.outputs.archiveStorageAccountName

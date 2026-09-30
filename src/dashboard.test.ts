@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto";
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -75,7 +77,7 @@ async function startDashboard(env: Record<string, string>) {
   });
   processes.push(proc);
   await waitForListening(proc);
-  return Number(env.SAMASARA_DASHBOARD_PORT);
+  return { port: Number(env.SAMASARA_DASHBOARD_PORT), dbPath: join(root, "data", "samasara.sqlite") };
 }
 
 test("public origin allows anonymous reads and blocks writes", async () => {
@@ -86,6 +88,7 @@ test("public origin allows anonymous reads and blocks writes", async () => {
     SAMASARA_DASHBOARD_PORT: String(port),
     SAMASARA_DASHBOARD_ORIGIN: origin,
     SAMASARA_DASHBOARD_USER: "owner@example.com",
+    SAMASARA_TELEMETRY_HASH_KEY: "test-feature-telemetry-hash-key-32",
   });
   const anonymous = await curl(port, "/api/status", { Host: host });
   expect(anonymous.status).toBe(200);
@@ -154,9 +157,9 @@ test("public origin allows anonymous reads and blocks writes", async () => {
 }, 10_000);
 
 test("localhost dashboard stays writable without Tailscale identity", async () => {
-  const port = 35000 + Math.floor(Math.random() * 2000);
-  await startDashboard({
-    SAMASARA_DASHBOARD_PORT: String(port),
+  const requestedPort = 35000 + Math.floor(Math.random() * 2000);
+  const { port } = await startDashboard({
+    SAMASARA_DASHBOARD_PORT: String(requestedPort),
     SAMASARA_DASHBOARD_ORIGIN: "",
     SAMASARA_DASHBOARD_USER: "",
   });
@@ -166,4 +169,56 @@ test("localhost dashboard stays writable without Tailscale identity", async () =
   const csrf = await curl(port, "/api/csrf", {});
   expect(csrf.status).toBe(200);
   expect(typeof csrf.body.token).toBe("string");
+}, 10_000);
+
+test("feature telemetry requires identity and stores only allowlisted metadata", async () => {
+  const origin = "https://samasara.example.ts.net";
+  const host = "samasara.example.ts.net";
+  const hashKey = "test-feature-telemetry-hash-key-32";
+  const requestedPort = 37000 + Math.floor(Math.random() * 2000);
+  const { port, dbPath } = await startDashboard({
+    SAMASARA_DASHBOARD_PORT: String(requestedPort),
+    SAMASARA_DASHBOARD_ORIGIN: origin,
+    SAMASARA_DASHBOARD_USER: "owner@example.com",
+    SAMASARA_TELEMETRY_HASH_KEY: hashKey,
+  });
+  const headers = { Host: host, Origin: origin, "Content-Type": "application/json" };
+
+  const anonymous = await curl(port, "/api/events", headers, [
+    "-X", "POST", "--data", JSON.stringify({ event: "dashboard.telemetry.opened" }),
+  ]);
+  expect(anonymous.status).toBe(403);
+
+  const unsupported = await curl(port, "/api/events", {
+    ...headers,
+    "Tailscale-User-Login": "owner@example.com",
+  }, [
+    "-X", "POST", "--data", JSON.stringify({ event: "dashboard.telemetry.opened", text: "private content" }),
+  ]);
+  expect(unsupported.status).toBe(400);
+
+  const accepted = await curl(port, "/api/events", {
+    ...headers,
+    "Tailscale-User-Login": "owner@example.com",
+    traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+  }, [
+    "-X", "POST", "--data", JSON.stringify({ event: "dashboard.telemetry.opened" }),
+  ]);
+  expect(accepted).toEqual({ status: 202, body: { accepted: true } });
+
+  const db = new Database(dbPath);
+  const row = db.query("SELECT event_json FROM monitoring_outbox ORDER BY id DESC LIMIT 1").get() as { event_json: string };
+  db.close();
+  const event = JSON.parse(row.event_json);
+  expect(event).toMatchObject({
+    eventName: "feature_clicked",
+    application: "samasara",
+    environment: "local",
+    userIdHash: createHmac("sha256", hashKey).update("owner@example.com").digest("hex"),
+    traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+    route: "/dashboard",
+    feature: "dashboard.telemetry.opened",
+  });
+  expect(row.event_json).not.toContain("owner@example.com");
+  expect(row.event_json).not.toContain("private content");
 }, 10_000);

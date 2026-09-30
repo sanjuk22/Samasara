@@ -1,4 +1,4 @@
-import { timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import { redactSecrets } from "./anticheat";
 import {
@@ -13,6 +13,7 @@ import {
 import { openDb, recentSessions, sessionById, telemetryTotals } from "./db";
 import type { SessionRow } from "./db";
 import { applicationStatus, healReport } from "./management";
+import { monitoringEnvironment, recordMonitoringEvent } from "./observability";
 
 const SECURITY_HEADERS = {
   "Cache-Control": "no-store",
@@ -20,6 +21,17 @@ const SECURITY_HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "no-referrer",
+};
+
+const DASHBOARD_TELEMETRY_EVENTS: Record<string, true> = {
+  "dashboard.status.opened": true,
+  "dashboard.telemetry.opened": true,
+  "dashboard.repositories.opened": true,
+  "dashboard.session.selected": true,
+  "dashboard.refreshed": true,
+  "repository.added": true,
+  "repository.ignore_rules.updated": true,
+  "repository.removed": true,
 };
 
 class HttpError extends Error {
@@ -41,13 +53,25 @@ function ignorePatterns(value: unknown): string[] {
   return value as string[];
 }
 
+function requestIdentity(request: Request): string | null {
+  const login = request.headers.get("tailscale-user-login")?.trim();
+  if (!login || login.length > 320 || /[\u0000-\u001f\u007f]/.test(login)) return null;
+  return login;
+}
+
 function editorAuthorized(request: Request, allowedUser: string | undefined): boolean {
   if (!allowedUser) return true;
-  const login = request.headers.get("tailscale-user-login");
+  const login = requestIdentity(request);
   if (login == null) return false;
   const expected = Buffer.from(allowedUser);
   const got = Buffer.from(login);
   return expected.length === got.length && timingSafeEqual(got, expected);
+}
+
+function requestTraceId(request: Request): string {
+  const traceparent = request.headers.get("traceparent");
+  const match = traceparent == null ? null : /^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/i.exec(traceparent);
+  return match?.[1]?.toLowerCase() ?? randomUUID().replaceAll("-", "");
 }
 
 export async function startDashboard() {
@@ -60,6 +84,7 @@ export async function startDashboard() {
   ]);
   const publicOrigin = process.env.SAMASARA_DASHBOARD_ORIGIN;
   const allowedUser = process.env.SAMASARA_DASHBOARD_USER;
+  const telemetryHashKey = process.env.SAMASARA_TELEMETRY_HASH_KEY?.trim() ?? "";
   if (publicOrigin) {
     if (!allowedUser) throw new Error("SAMASARA_DASHBOARD_USER must name the allowed Tailscale login");
     const url = new URL(publicOrigin);
@@ -67,6 +92,7 @@ export async function startDashboard() {
       throw new Error("SAMASARA_DASHBOARD_ORIGIN must be an HTTPS origin without a path");
     }
     origins.set(url.host, url.origin);
+    if (telemetryHashKey.length < 32) throw new Error("SAMASARA_TELEMETRY_HASH_KEY must contain at least 32 characters");
   }
   const token = Buffer.from(crypto.randomUUID() + crypto.randomUUID());
   const assets = new Map<string, { body: string; type: string }>();
@@ -148,6 +174,45 @@ export async function startDashboard() {
             return Response.json(report(session, true), { headers: SECURITY_HEADERS });
           }
           throw new HttpError(404, "Not found");
+        }
+        if (path === "/api/events") {
+          if (request.method !== "POST") throw new HttpError(405, "Method not allowed");
+          if (!canEdit) throw new HttpError(403, "Tailscale account not authorized");
+          const identity = requestIdentity(request);
+          if (identity == null) throw new HttpError(403, "Tailscale identity required");
+          if (requestOrigin !== origin) throw new HttpError(403, "Same-origin request required");
+          if (telemetryHashKey.length < 32) throw new HttpError(503, "Feature telemetry is not configured");
+          if (request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+            throw new HttpError(415, "Expected application/json");
+          }
+          let eventBody: unknown;
+          try {
+            eventBody = await request.json();
+          } catch {
+            throw new HttpError(400, "Invalid JSON body");
+          }
+          if (!eventBody || typeof eventBody !== "object" || Array.isArray(eventBody)) throw new HttpError(400, "Expected an object");
+          const fields = Object.keys(eventBody);
+          const eventName = "event" in eventBody ? eventBody.event : undefined;
+          if (fields.length !== 1 || typeof eventName !== "string" || DASHBOARD_TELEMETRY_EVENTS[eventName] !== true) {
+            throw new HttpError(400, "Unsupported feature telemetry event");
+          }
+          const recorded = await recordMonitoringEvent(
+            db,
+            {
+              application: "samasara",
+              environment: monitoringEnvironment(),
+              userIdHash: createHmac("sha256", telemetryHashKey).update(identity.toLowerCase()).digest("hex"),
+              traceId: requestTraceId(request),
+            },
+            {
+              eventName: "feature_clicked",
+              route: "/dashboard",
+              feature: eventName,
+            },
+          );
+          if (recorded.flush.error) console.error("Dashboard feature telemetry delivery deferred");
+          return Response.json({ accepted: true }, { status: 202, headers: SECURITY_HEADERS });
         }
         if (!["POST", "PATCH", "DELETE"].includes(request.method)) throw new HttpError(405, "Method not allowed");
         if (!canEdit) throw new HttpError(403, "Tailscale account not authorized");

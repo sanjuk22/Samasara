@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test";
+import { openDb } from "./db";
 import {
+  azureMonitoringSettings,
   createMonitoringEvent,
+  flushMonitoringOutbox,
   MonitoringContractError,
+  monitoringEnvironment,
+  queueMonitoringEvent,
+  recordMonitoringEvent,
   type MonitoringEventInput,
 } from "./observability";
 
@@ -12,6 +18,10 @@ const context = {
   sessionId: "session-42",
   traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
 };
+
+function monitoringDb() {
+  return openDb({ dbPath: ":memory:" });
+}
 
 test("creates a normalized monitoring event and derives total tokens", () => {
   const event = createMonitoringEvent(
@@ -83,4 +93,113 @@ test("rejects inconsistent or unsafe telemetry values", () => {
     eventName: "feature_clicked",
     attributes: { email_address: "person@example.gov" },
   })).toThrow("attribute key email_address is not allowed");
+});
+
+test("delivers queued AI interactions to the Azure Monitor DCR", async () => {
+  const db = monitoringDb();
+  let requestedUrl = "";
+  let requestedBody: unknown;
+  const request = (async (input: string | URL | Request, init?: RequestInit) => {
+    requestedUrl = String(input);
+    requestedBody = JSON.parse(String(init?.body));
+    expect(init?.headers).toMatchObject({ Authorization: "Bearer test-access-token" });
+    return new Response(null, { status: 204 });
+  }) as typeof fetch;
+
+  const recorded = await recordMonitoringEvent(db, context, {
+    eventName: "ai_interaction",
+    feature: "chat.ask",
+    result: "success",
+    durationMs: 250,
+    model: "gpt-5.1",
+    promptTokens: 10,
+    completionTokens: 5,
+    questionHash: "c".repeat(64),
+  }, {
+    env: {
+      SAMASARA_AZURE_LOGS_ENDPOINT: "https://logs.example.test/",
+      SAMASARA_AZURE_DCR_ID: "dcr-abc123",
+    },
+    accessToken: "test-access-token",
+    fetch: request,
+    now: new Date("2026-09-28T12:00:00.000Z"),
+  });
+
+  expect(recorded.flush).toEqual({ delivered: 1, deferred: 0 });
+  expect(requestedUrl).toBe(
+    "https://logs.example.test/dataCollectionRules/dcr-abc123/streams/Custom-SamasaraEvent?api-version=2023-01-01",
+  );
+  expect(requestedBody).toEqual([recorded.event]);
+  expect(db.query("SELECT COUNT(*) AS count FROM monitoring_outbox").get()).toEqual({ count: 0 });
+  db.close();
+});
+
+test("retains failed AI interactions and applies retry backoff", async () => {
+  const db = monitoringDb();
+  const now = new Date("2026-09-28T12:00:00.000Z");
+  queueMonitoringEvent(db, context, {
+    eventName: "ai_interaction",
+    feature: "chat.ask",
+    result: "failure",
+    durationMs: 50,
+    model: "gpt-5.1",
+    promptTokens: 3,
+    completionTokens: 0,
+    questionHash: "d".repeat(64),
+  }, now);
+  let requests = 0;
+  const request = (async () => {
+    requests += 1;
+    return new Response(null, { status: 503 });
+  }) as typeof fetch;
+  const options = {
+    env: {
+      SAMASARA_AZURE_LOGS_ENDPOINT: "https://logs.example.test",
+      SAMASARA_AZURE_DCR_ID: "dcr-abc123",
+    },
+    accessToken: "test-access-token",
+    fetch: request,
+    now,
+  };
+
+  const failed = await flushMonitoringOutbox(db, options);
+  expect(failed).toEqual({
+    delivered: 0,
+    deferred: 1,
+    error: "Azure Monitor ingestion failed with HTTP 503",
+  });
+  expect(db.query(
+    "SELECT attempt_count, next_attempt_at, last_error FROM monitoring_outbox",
+  ).get()).toEqual({
+    attempt_count: 1,
+    next_attempt_at: now.getTime() + 1_000,
+    last_error: "Azure Monitor ingestion failed with HTTP 503",
+  });
+
+  expect(await flushMonitoringOutbox(db, options)).toEqual({ delivered: 0, deferred: 0 });
+  expect(requests).toBe(1);
+  db.close();
+});
+
+test("requires complete AI interaction metadata", () => {
+  expect(() => createMonitoringEvent(context, {
+    eventName: "ai_interaction",
+    feature: "chat.ask",
+    result: "success",
+    durationMs: 10,
+    promptTokens: 1,
+    completionTokens: 1,
+    questionHash: "e".repeat(64),
+  })).toThrow("ai_interaction is missing required fields: model");
+});
+
+test("validates monitoring environment and complete Azure settings", () => {
+  expect(monitoringEnvironment({ SAMASARA_ENVIRONMENT: "prod" })).toBe("prod");
+  expect(() => monitoringEnvironment({ SAMASARA_ENVIRONMENT: "production" })).toThrow(
+    "SAMASARA_ENVIRONMENT must be local, dev, test, or prod",
+  );
+  expect(azureMonitoringSettings({})).toBeNull();
+  expect(() => azureMonitoringSettings({ SAMASARA_AZURE_LOGS_ENDPOINT: "https://logs.example.test" })).toThrow(
+    "SAMASARA_AZURE_LOGS_ENDPOINT and SAMASARA_AZURE_DCR_ID must be configured together",
+  );
 });

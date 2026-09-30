@@ -1,4 +1,5 @@
-import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { Database } from "bun:sqlite";
 import { checkDiff } from "./anticheat";
@@ -17,8 +18,10 @@ import {
 import { fetchFailedJobLog, pollRepo, resolveGitIdentity, type GitIdentity } from "./github";
 import { notifyHuman } from "./notify";
 import { buildPriorHealContext, extractOmpReasoning } from "./telemetry";
+import { monitoringEnvironment, recordMonitoringEvent } from "./observability";
 
 const BUN_BIN = "/home/opc/.bun/bin";
+const SAMASARA_ACTOR_HASH = createHash("sha256").update("service:samasara").digest("hex");
 const NO_RETRY: Record<string, true> = {
   landed: true,
   reverted: true,
@@ -155,9 +158,10 @@ function parseOmpJsonl(
   db: Database,
   sessionId: number,
   stdout: string,
-): { tokens_in: number; tokens_out: number; reasoning: string | null; ompSessionId: string | null } {
+): { tokens_in: number; tokens_out: number; reasoning: string | null; ompSessionId: string | null; model: string | null } {
   let tokens_in = 0;
   let tokens_out = 0;
+  let model: string | null = null;
   for (const line of stdout.split("\n")) {
     if (line.trim() === "") continue;
     let obj: unknown;
@@ -176,6 +180,8 @@ function parseOmpJsonl(
       if (typeof tin === "number") tokens_in = tin;
       if (typeof tout === "number") tokens_out = tout;
     }
+    const candidateModel = rec.model ?? rec.model_id ?? rec.deployment;
+    if (typeof candidateModel === "string" && candidateModel.trim() !== "") model = candidateModel.trim();
     if (rec.type === "tool_execution_start" || rec.type === "tool_execution_end") {
       let toolName = "unknown";
       if (typeof rec.toolName === "string") toolName = rec.toolName;
@@ -188,6 +194,7 @@ function parseOmpJsonl(
     tokens_out,
     reasoning: extractOmpReasoning(stdout),
     ompSessionId: extractOmpSessionId(stdout),
+    model,
   };
 }
 
@@ -399,19 +406,31 @@ export async function runSession(opts: {
       ompArgs.push("--resume", opts.ompSessionId);
       appendEvent(db, id, "omp_resume", { ompSessionId: opts.ompSessionId });
     }
-    if (logPath) ompArgs.push(`@${logPath}`);
-    const priorHealContext = buildPriorHealContext(db, key, id);
-    if (priorHealContext) ompArgs.push(priorHealContext);
-    if (iteration > 1) {
-      const reds = originalRed.length > 0 ? originalRed.join("; ") : "unknown";
-      ompArgs.push(
-        `HEAD ${sha} on ${config.ref} is still red after the previous land. New failing checks: ${reds}. Your earlier patch is already in this checkout and in this session. Reproduce the new failure, patch, re-run until green. Do not commit or push.`,
-      );
-    } else {
-      ompArgs.push(
-        `HEAD ${sha} on ${config.ref} is red. Reproduce the failed job, patch, re-run until green. Do not commit or push.`,
-      );
+    const questionHasher = createHash("sha256");
+    const hashQuestionPart = (value: string | Uint8Array) => {
+      questionHasher.update(value);
+      questionHasher.update("\u001e");
+    };
+    if (logPath) {
+      ompArgs.push(`@${logPath}`);
+      try {
+        hashQuestionPart(readFileSync(logPath));
+      } catch {
+        /* the missing attachment is already represented by logs_fetched */
+      }
     }
+    const priorHealContext = buildPriorHealContext(db, key, id);
+    if (priorHealContext) {
+      ompArgs.push(priorHealContext);
+      hashQuestionPart(priorHealContext);
+    }
+    const instruction = iteration > 1
+      ? `HEAD ${sha} on ${config.ref} is still red after the previous land. New failing checks: ${originalRed.length > 0 ? originalRed.join("; ") : "unknown"}. Your earlier patch is already in this checkout and in this session. Reproduce the new failure, patch, re-run until green. Do not commit or push.`
+      : `HEAD ${sha} on ${config.ref} is red. Reproduce the failed job, patch, re-run until green. Do not commit or push.`;
+    ompArgs.push(instruction);
+    hashQuestionPart(instruction);
+    const questionHash = questionHasher.digest("hex");
+    const traceId = randomBytes(16).toString("hex");
     const ompEnv = gitEnv();
     ompEnv.PATH = `${BUN_BIN}:${ompEnv.PATH ?? ""}`;
     const ompStart = Date.now();
@@ -426,6 +445,36 @@ export async function runSession(opts: {
     const usage = parseOmpJsonl(db, id, omp.stdout);
     const attempts = iteration;
     if (usage.reasoning) appendEvent(db, id, "reasoning", { text: usage.reasoning });
+    try {
+      const result = omp.aborted ? "timeout" : omp.code === 0 ? "success" : "failure";
+      const recorded = await recordMonitoringEvent(
+        db,
+        {
+          application: "samasara",
+          environment: monitoringEnvironment(),
+          userIdHash: SAMASARA_ACTOR_HASH,
+          sessionId: usage.ompSessionId ?? String(id),
+          traceId,
+        },
+        {
+          eventName: "ai_interaction",
+          feature: "healer.completion",
+          result,
+          durationMs: Date.now() - ompStart,
+          repository: key,
+          commitSha: sha,
+          model: usage.model ?? "unknown",
+          promptTokens: usage.tokens_in,
+          completionTokens: usage.tokens_out,
+          questionHash,
+          attributes: { iteration, exit_code: omp.code },
+        },
+      );
+      if (recorded.flush.error) console.error(`${key} session ${id} telemetry deferred ${recorded.flush.error}`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`${key} session ${id} telemetry failed ${message.slice(0, 200)}`);
+    }
 
     if (omp.aborted) {
       finish({

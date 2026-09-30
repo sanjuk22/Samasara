@@ -125,6 +125,21 @@
     return data;
   }
 
+  function emitTelemetry(eventName) {
+    const body = JSON.stringify({ event: eventName });
+    if (typeof navigator.sendBeacon === "function") {
+      const queued = navigator.sendBeacon("/api/events", new Blob([body], { type: "application/json" }));
+      if (queued) return;
+    }
+    void fetch("/api/events", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body,
+      keepalive: true,
+    }).catch(() => {});
+  }
+
   async function csrfToken() {
     if (state.csrf) return state.csrf;
     if (!state.csrfRequest) {
@@ -167,6 +182,7 @@
     const bottom = el("div", "status-session");
     const sessionButton = el("button", "link-button", "No session recorded");
     sessionButton.type = "button";
+    sessionButton.dataset.telemetryEvent = "dashboard.session.selected";
     sessionButton.addEventListener("click", () => {
       activateView("telemetry");
       selectSession(Number(sessionButton.dataset.sessionId));
@@ -259,6 +275,7 @@
         const button = el("button", "session-button");
         button.type = "button";
         button.setAttribute("aria-controls", "session-detail");
+        button.dataset.telemetryEvent = "dashboard.session.selected";
         button.addEventListener("click", () => selectSession(session.sessionId));
         const name = el("span", "session-name");
         const meta = el("span", "session-meta");
@@ -578,6 +595,7 @@
         : await mutate("/api/repos", "POST", { repo, ignoreChecks, revision });
       useConfig(config);
       resetEditor();
+      emitTelemetry(editing ? "repository.ignore_rules.updated" : "repository.added");
       notice("repos-notice", `${repo} ${editing ? "updated" : "added"}. Changes apply on the next poll; a poll already in progress is unchanged.`, "success");
       void refreshStatus(true);
     } catch (error) {
@@ -606,6 +624,7 @@
     try {
       const config = await mutate(repoPath(repo), "DELETE", { revision });
       useConfig(config);
+      emitTelemetry("repository.removed");
       $("delete-dialog").close();
       if (state.editorRepo === repo) {
         notice("form-notice", "This repository was removed. Your unsaved entries are preserved, but it is no longer tracked. Cancel editing to add a repository.", "info");
@@ -643,6 +662,12 @@
     $("delete-reload").hidden = true;
     updateRepoControls();
   }
+
+  document.addEventListener("click", (event) => {
+    const target = event.target instanceof Element ? event.target.closest("[data-telemetry-event]") : null;
+    const eventName = target?.dataset.telemetryEvent;
+    if (eventName) emitTelemetry(eventName);
+  });
 
   for (const [index, tab] of tabs.entries()) {
     tab.addEventListener("click", () => activateView(tab.dataset.view));
@@ -685,6 +710,7 @@
   void refreshStatus();
   void loadTelemetry();
   void loadRepos(false);
+  emitTelemetry("dashboard.status.opened");
   setInterval(() => {
     if (document.hidden) return;
     void refreshStatus(true);

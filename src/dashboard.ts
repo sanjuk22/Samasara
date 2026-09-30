@@ -126,6 +126,7 @@ export async function startDashboard() {
         const origin = origins.get(request.headers.get("host") ?? "");
         if (!origin) throw new HttpError(403, "Host not allowed");
         const canEdit = editorAuthorized(request, publicOrigin ? allowedUser : undefined);
+        const canViewTelemetry = canEdit;
         const requestOrigin = request.headers.get("origin");
         if (request.method === "GET") {
           if (request.headers.get("sec-fetch-mode") === "cors" && requestOrigin != null && requestOrigin !== origin) {
@@ -147,9 +148,33 @@ export async function startDashboard() {
             return Response.json({
               ...applicationStatus({ ...config, repos: latest.repos, ignoreChecks: latest.ignoreChecks }, db),
               canEdit,
+              canViewTelemetry,
             }, { headers: SECURITY_HEADERS });
           }
           if (path === "/api/repos") return Response.json(readRepoConfig(), { headers: SECURITY_HEADERS });
+          const monitoringRoute = path === "/api/telemetry" ? "/api/telemetry" : /^\/api\/telemetry\/[^/]+$/.test(path) ? "/api/telemetry/:id" : null;
+          if (monitoringRoute && !canViewTelemetry) {
+            const identity = requestIdentity(request);
+            if (identity != null && telemetryHashKey.length >= 32) {
+              const denied = await recordMonitoringEvent(
+                db,
+                {
+                  application: "samasara",
+                  environment: monitoringEnvironment(),
+                  userIdHash: createHmac("sha256", telemetryHashKey).update(identity.toLowerCase()).digest("hex"),
+                  traceId: requestTraceId(request),
+                },
+                {
+                  eventName: "access_denied",
+                  route: monitoringRoute,
+                  feature: "dashboard.monitoring",
+                  result: "denied",
+                },
+              );
+              if (denied.flush.error) console.error("Dashboard access telemetry delivery deferred");
+            }
+            throw new HttpError(403, "Tailscale account not authorized");
+          }
           if (path === "/api/telemetry") {
             const rawBefore = url.searchParams.get("before");
             const sessions = recentSessions(db, 21, rawBefore == null ? undefined : positiveId(rawBefore));

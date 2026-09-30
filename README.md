@@ -41,7 +41,7 @@ The healer daemon and the dashboard are separate processes. The dashboard listen
 
 URL: `https://samasara.tail22214a.ts.net/`
 
-Anyone can open that URL to view status and telemetry. Adding, editing, or removing repositories still requires Tailscale identity `nxu981@gmail.com` (install from https://tailscale.com/download and join this tailnet). Semantic dashboard events are accepted only for that authenticated identity; anonymous views are not recorded. Do not put GitHub or SMTP secrets in the dashboard env file.
+Anyone can open that URL to view repository status. Healing telemetry, session details, and repository changes require Tailscale identity `nxu981@gmail.com` (install from https://tailscale.com/download and join this tailnet). Unauthorized monitoring requests from identified Tailscale users produce privacy-safe `access_denied` events; anonymous views are not recorded. Do not put GitHub or SMTP secrets in the dashboard env file.
 
 ```bash
 bun src/index.ts dashboard

@@ -84,7 +84,7 @@ test("public origin allows anonymous reads and blocks writes", async () => {
   const origin = "https://samasara.example.ts.net";
   const host = "samasara.example.ts.net";
   const port = 33000 + Math.floor(Math.random() * 2000);
-  await startDashboard({
+  const { dbPath } = await startDashboard({
     SAMASARA_DASHBOARD_PORT: String(port),
     SAMASARA_DASHBOARD_ORIGIN: origin,
     SAMASARA_DASHBOARD_USER: "owner@example.com",
@@ -93,25 +93,45 @@ test("public origin allows anonymous reads and blocks writes", async () => {
   const anonymous = await curl(port, "/api/status", { Host: host });
   expect(anonymous.status).toBe(200);
   expect(anonymous.body.canEdit).toBe(false);
+  expect(anonymous.body.canViewTelemetry).toBe(false);
   expect(anonymous.body.repos[0].repo).toBe("acme/demo");
 
   const owner = await curl(port, "/api/status", { Host: host, "Tailscale-User-Login": "owner@example.com" });
   expect(owner.status).toBe(200);
   expect(owner.body.canEdit).toBe(true);
+  expect(owner.body.canViewTelemetry).toBe(true);
 
   const stranger = await curl(port, "/api/status", { Host: host, "Tailscale-User-Login": "other@example.com" });
   expect(stranger.status).toBe(200);
   expect(stranger.body.canEdit).toBe(false);
+  expect(stranger.body.canViewTelemetry).toBe(false);
 
-  const telemetry = await curl(port, "/api/telemetry", { Host: host });
-  expect(telemetry.status).toBe(200);
-  expect(telemetry.body.totals).toEqual({
+  const anonymousTelemetry = await curl(port, "/api/telemetry", { Host: host });
+  expect(anonymousTelemetry.status).toBe(403);
+
+  const ownerTelemetry = await curl(port, "/api/telemetry", { Host: host, "Tailscale-User-Login": "owner@example.com" });
+  expect(ownerTelemetry.status).toBe(200);
+  expect(ownerTelemetry.body.totals).toEqual({
     sessions: 0,
     attempts: 0,
     tokensIn: 0,
     tokensOut: 0,
     durationMs: 0,
   });
+
+  const strangerTelemetry = await curl(port, "/api/telemetry", { Host: host, "Tailscale-User-Login": "other@example.com" });
+  expect(strangerTelemetry.status).toBe(403);
+  const monitoringDb = new Database(dbPath);
+  const deniedRow = monitoringDb.query("SELECT event_json FROM monitoring_outbox ORDER BY id DESC LIMIT 1").get() as { event_json: string };
+  monitoringDb.close();
+  expect(JSON.parse(deniedRow.event_json)).toMatchObject({
+    eventName: "access_denied",
+    userIdHash: createHmac("sha256", "test-feature-telemetry-hash-key-32").update("other@example.com").digest("hex"),
+    route: "/api/telemetry",
+    feature: "dashboard.monitoring",
+    result: "denied",
+  });
+  expect(deniedRow.event_json).not.toContain("other@example.com");
 
   const csrf = await curl(port, "/api/csrf", { Host: host });
   expect(csrf.status).toBe(403);
@@ -138,6 +158,7 @@ test("public origin allows anonymous reads and blocks writes", async () => {
   });
   expect(sharedStatus.status).toBe(200);
   expect(sharedStatus.body.canEdit).toBe(false);
+  expect(sharedStatus.body.canViewTelemetry).toBe(false);
 
   const foreignFetch = await curl(port, "/api/status", {
     Host: host,
@@ -166,6 +187,7 @@ test("localhost dashboard stays writable without Tailscale identity", async () =
   const status = await curl(port, "/api/status", {});
   expect(status.status).toBe(200);
   expect(status.body.canEdit).toBe(true);
+  expect(status.body.canViewTelemetry).toBe(true);
   const csrf = await curl(port, "/api/csrf", {});
   expect(csrf.status).toBe(200);
   expect(typeof csrf.body.token).toBe("string");

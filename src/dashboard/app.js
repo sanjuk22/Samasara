@@ -25,6 +25,7 @@
     csrf: null,
     csrfRequest: null,
     canEdit: false,
+    canMonitor: false,
   };
   const statusCards = new Map();
   const sessionCards = new Map();
@@ -184,6 +185,7 @@
     sessionButton.type = "button";
     sessionButton.dataset.telemetryEvent = "dashboard.session.selected";
     sessionButton.addEventListener("click", () => {
+      if (!state.canMonitor) return;
       activateView("telemetry");
       selectSession(Number(sessionButton.dataset.sessionId));
     });
@@ -212,6 +214,7 @@
       text($("repo-count"), data.repos.length);
       text($("poll-history"), data.hasPolls ? "Historical poll records are available." : "No polls have been recorded yet.");
       applyEditAccess(data.canEdit === true);
+      applyMonitoringAccess(data.canViewTelemetry === true);
       const present = new Set();
       for (const repo of data.repos) {
         present.add(repo.repo);
@@ -225,7 +228,7 @@
         text(nodes.pollAt, repo.poll ? timestamp(repo.poll.at) : "No poll recorded");
         text(nodes.sha, repo.poll?.sha ? repo.poll.sha.slice(0, 12) : "—");
         nodes.sha.title = repo.poll?.sha || "No commit recorded";
-        nodes.sessionButton.disabled = !repo.session;
+        nodes.sessionButton.disabled = !repo.session || !state.canMonitor;
         text(nodes.sessionButton, repo.session ? `Session #${repo.session.id}` : "No session recorded");
         nodes.sessionButton.dataset.sessionId = repo.session ? String(repo.session.id) : "";
         nodes.sessionOutcome.hidden = !repo.session;
@@ -315,6 +318,7 @@
   }
 
   async function loadTelemetry(pages = state.pages, quiet = false) {
+    if (!state.canMonitor) return;
     if (state.telemetryBusy) return;
     if (quiet && $("session-list").contains(document.activeElement)) return;
     state.telemetryBusy = true;
@@ -339,6 +343,7 @@
   }
 
   function selectSession(id) {
+    if (!state.canMonitor) return;
     if (!Number.isSafeInteger(id) || id < 1) return;
     if (state.selectedId !== id) {
       state.selectedId = id;
@@ -487,6 +492,15 @@
     }
     if (changed && state.config) renderRepos();
     else updateRepoControls();
+  }
+
+  function applyMonitoringAccess(canMonitor) {
+    const next = canMonitor === true;
+    const changed = state.canMonitor !== next;
+    state.canMonitor = next;
+    $("tab-telemetry").hidden = !next;
+    if (!next && state.view === "telemetry") activateView("status");
+    if (next && changed && !state.telemetryLoaded) void loadTelemetry();
   }
 
   function editorChanged() {
@@ -708,13 +722,12 @@
   $("delete-dialog").addEventListener("close", () => { state.deleteTarget = null; });
 
   void refreshStatus();
-  void loadTelemetry();
   void loadRepos(false);
   emitTelemetry("dashboard.status.opened");
   setInterval(() => {
     if (document.hidden) return;
     void refreshStatus(true);
-    if (state.pages.length === 1) void loadTelemetry(state.pages, true);
-    if (state.selectedId != null && (!state.detail || state.detail.outcome === "running")) void loadDetail(true);
+    if (state.canMonitor && state.pages.length === 1) void loadTelemetry(state.pages, true);
+    if (state.canMonitor && state.selectedId != null && (!state.detail || state.detail.outcome === "running")) void loadDetail(true);
   }, 10_000);
 })();

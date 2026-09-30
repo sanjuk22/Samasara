@@ -21,6 +21,9 @@ var archiveStorageAccountName = 'stdaesobs${suffix}'
 var workflowStreamName = 'Custom-SamasaraWorkflow'
 var healerStreamName = 'Custom-SamasaraHealer'
 var eventStreamName = 'Custom-SamasaraEvent'
+var webhookStorageAccountName = 'stdaeswebhook${suffix}'
+var webhookFunctionName = 'func-samasara-github-${environment}-${suffix}'
+var webhookPlanName = 'plan-samasara-github-${environment}'
 var logAnalyticsReaderRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '73c42c96-874c-492b-b04d-ab87d138a893'
@@ -38,6 +41,60 @@ var storageBlobDataContributorRoleId = subscriptionResourceId(
   'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 )
 
+var storageBlobDataOwnerRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  'b7e6dc6d-f1e8-4753-8033-0f276bb0955b'
+)
+var storageQueueDataContributorRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '974c5e8b-45b9-4653-ba55-5f855dd0fb88'
+)
+var storageTableDataContributorRoleId = subscriptionResourceId(
+  'Microsoft.Authorization/roleDefinitions',
+  '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+)
+var serviceAlerts = [
+  {
+    name: 'application-failures'
+    displayName: 'Application request failures'
+    description: 'Backend requests are returning failures.'
+    query: 'AppRequests | where Success == false | summarize AggregatedValue=count()'
+    operator: 'GreaterThan'
+    threshold: 0
+    frequency: 'PT5M'
+    window: 'PT5M'
+  }
+  {
+    name: 'ai-token-spike'
+    displayName: 'AI token usage spike'
+    description: 'AI token use exceeded one million tokens in one hour.'
+    query: 'SamasaraEvent_CL | where EventName == "ai_interaction" | summarize AggregatedValue=sum(TotalTokens)'
+    operator: 'GreaterThan'
+    threshold: 1000000
+    frequency: 'PT15M'
+    window: 'PT1H'
+  }
+  {
+    name: 'login-failures'
+    displayName: 'Authentication failures'
+    description: 'Authentication failures or denied requests exceeded the threshold.'
+    query: 'SamasaraEvent_CL | where EventName in ("login_failed", "access_denied") | summarize AggregatedValue=count()'
+    operator: 'GreaterThan'
+    threshold: 10
+    frequency: 'PT5M'
+    window: 'PT5M'
+  }
+  {
+    name: 'telemetry-gap'
+    displayName: 'Samasara telemetry gap'
+    description: 'No Samasara heartbeat arrived during the last hour.'
+    query: 'SamasaraEvent_CL | where EventName == "telemetry_heartbeat" | summarize AggregatedValue=count()'
+    operator: 'LessThan'
+    threshold: 1
+    frequency: 'PT15M'
+    window: 'PT1H'
+  }
+]
 var workflowColumns = [
   { name: 'TimeGenerated', type: 'datetime' }
   { name: 'Repository', type: 'string' }
@@ -300,6 +357,127 @@ resource eventPublishers 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }]
 
+resource webhookStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: webhookStorageAccountName
+  location: location
+  tags: tags
+  kind: 'StorageV2'
+  sku: {
+    name: 'Standard_LRS'
+  }
+  properties: {
+    allowBlobPublicAccess: false
+    allowSharedKeyAccess: false
+    defaultToOAuthAuthentication: true
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
+  }
+}
+
+resource webhookQueueService 'Microsoft.Storage/storageAccounts/queueServices@2023-05-01' = {
+  parent: webhookStorage
+  name: 'default'
+}
+
+resource webhookQueue 'Microsoft.Storage/storageAccounts/queueServices/queues@2023-05-01' = {
+  parent: webhookQueueService
+  name: 'github-webhooks'
+}
+
+resource webhookTableService 'Microsoft.Storage/storageAccounts/tableServices@2023-05-01' = {
+  parent: webhookStorage
+  name: 'default'
+}
+
+resource webhookDeliveryTable 'Microsoft.Storage/storageAccounts/tableServices/tables@2023-05-01' = {
+  parent: webhookTableService
+  name: 'GitHubWebhookDeliveries'
+}
+
+resource webhookBlobOwner 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments) {
+  name: guid(webhookStorage.id, runtimeIdentity.id, storageBlobDataOwnerRoleId)
+  scope: webhookStorage
+  properties: {
+    principalId: runtimeIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageBlobDataOwnerRoleId
+  }
+}
+
+resource webhookQueueContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments) {
+  name: guid(webhookStorage.id, runtimeIdentity.id, storageQueueDataContributorRoleId)
+  scope: webhookStorage
+  properties: {
+    principalId: runtimeIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageQueueDataContributorRoleId
+  }
+}
+
+resource webhookTableContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployRoleAssignments) {
+  name: guid(webhookStorage.id, runtimeIdentity.id, storageTableDataContributorRoleId)
+  scope: webhookStorage
+  properties: {
+    principalId: runtimeIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageTableDataContributorRoleId
+  }
+}
+
+resource webhookPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
+  name: webhookPlanName
+  location: location
+  tags: tags
+  kind: 'linux'
+  sku: {
+    name: 'Y1'
+    tier: 'Dynamic'
+  }
+  properties: {
+    reserved: true
+  }
+}
+
+resource webhookFunction 'Microsoft.Web/sites@2023-12-01' = {
+  name: webhookFunctionName
+  location: location
+  tags: tags
+  kind: 'functionapp,linux'
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${runtimeIdentity.id}': {}
+    }
+  }
+  properties: {
+    serverFarmId: webhookPlan.id
+    httpsOnly: true
+    keyVaultReferenceIdentity: runtimeIdentity.id
+    siteConfig: {
+      alwaysOn: false
+      ftpsState: 'Disabled'
+      http20Enabled: true
+      linuxFxVersion: 'Python|3.12'
+      minTlsVersion: '1.2'
+      appSettings: [
+        { name: 'FUNCTIONS_EXTENSION_VERSION', value: '~4' }
+        { name: 'FUNCTIONS_WORKER_RUNTIME', value: 'python' }
+        { name: 'AzureWebJobsStorage__accountName', value: webhookStorage.name }
+        { name: 'AzureWebJobsStorage__credential', value: 'managedidentity' }
+        { name: 'AzureWebJobsStorage__clientId', value: runtimeIdentity.properties.clientId }
+        { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: applicationInsights.properties.ConnectionString }
+        { name: 'AZURE_CLIENT_ID', value: runtimeIdentity.properties.clientId }
+        { name: 'WEBHOOK_STORAGE_ACCOUNT', value: webhookStorage.name }
+        { name: 'GITHUB_DELIVERY_TABLE', value: webhookDeliveryTable.name }
+        { name: 'SAMASARA_AZURE_LOGS_ENDPOINT', value: dataCollectionEndpoint.properties.logsIngestion.endpoint }
+        { name: 'SAMASARA_AZURE_DCR_ID', value: dataCollectionRule.properties.immutableId }
+        { name: 'SAMASARA_WORKFLOW_STREAM', value: workflowStreamName }
+        { name: 'GITHUB_WEBHOOK_SECRET', value: '@Microsoft.KeyVault(VaultName=${keyVault.name};SecretName=github-webhook-secret)' }
+      ]
+    }
+  }
+}
+
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: keyVaultName
   location: location
@@ -403,6 +581,16 @@ resource archiveWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = if
   }
 }
 
+resource externalArchiveWriters 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalId in eventPublisherPrincipalIds: if (deployRoleAssignments) {
+  name: guid(archiveStorage.id, principalId, storageBlobDataContributorRoleId)
+  scope: archiveStorage
+  properties: {
+    principalId: principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: storageBlobDataContributorRoleId
+  }
+}]
+
 resource alertActionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(alertEmail)) {
   name: 'ag-samasara-observability-${environment}'
   location: 'global'
@@ -492,6 +680,43 @@ resource workflowFailureAlert 'Microsoft.Insights/scheduledQueryRules@2023-12-01
   dependsOn: [workflowTable]
 }
 
+resource serviceHealthAlerts 'Microsoft.Insights/scheduledQueryRules@2023-12-01' = [for alert in serviceAlerts: if (!empty(alertEmail)) {
+  name: 'alert-samasara-${alert.name}-${environment}'
+  location: location
+  tags: tags
+  properties: {
+    displayName: '${alert.displayName} (${environment})'
+    description: alert.description
+    enabled: true
+    severity: 2
+    evaluationFrequency: alert.frequency
+    windowSize: alert.window
+    scopes: [workspace.id]
+    targetResourceTypes: ['Microsoft.OperationalInsights/workspaces']
+    autoMitigate: false
+    skipQueryValidation: true
+    criteria: {
+      allOf: [
+        {
+          query: alert.query
+          metricMeasureColumn: 'AggregatedValue'
+          timeAggregation: 'Average'
+          operator: alert.operator
+          threshold: alert.threshold
+          failingPeriods: {
+            numberOfEvaluationPeriods: 1
+            minFailingPeriodsToAlert: 1
+          }
+        }
+      ]
+    }
+    actions: {
+      actionGroups: [alertActionGroup.id]
+    }
+  }
+  dependsOn: [eventTable]
+}]
+
 output workspaceResourceId string = workspace.id
 output workspaceCustomerId string = workspace.properties.customerId
 output applicationInsightsResourceId string = applicationInsights.id
@@ -503,3 +728,5 @@ output runtimeIdentityResourceId string = runtimeIdentity.id
 output runtimeIdentityClientId string = runtimeIdentity.properties.clientId
 output keyVaultName string = keyVault.name
 output archiveStorageAccountName string = archiveStorage.name
+output webhookFunctionName string = webhookFunction.name
+output webhookUrl string = 'https://${webhookFunction.properties.defaultHostName}/api/github/webhook'

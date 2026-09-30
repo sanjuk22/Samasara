@@ -74,22 +74,27 @@ bun test
 
 ## Telemetry
 
-Healer diagnostics remain in local SQLite. `infra/main.bicep` also deploys the shared Azure Log Analytics workspace, direct Data Collection Rule, and `SamasaraEvent_CL` table used by instrumented applications. AI interaction records contain hashes and usage metadata only—never prompts, responses, email addresses, or usernames. Application workloads publish with managed identity to the `Custom-SamasaraEvent` stream; set `deployRoleAssignments=true` with `eventPublisherPrincipalIds` when an Owner or User Access Administrator deploys the template.
+Healer diagnostics remain in local SQLite. `infra/main.bicep` deploys the shared Log Analytics workspace, workspace-based Application Insights, direct Data Collection Rules, workflow webhook Function, restricted question archive, managed identity, RBAC, and failure/token/login/telemetry-gap alerts. Application workloads publish privacy-safe events with managed identity to `Custom-SamasaraEvent`; `eventPublisherPrincipalIds` must contain their managed-identity principal IDs when an Owner or User Access Administrator deploys with `deployRoleAssignments=true`.
 
-Samasara queues one `ai_interaction` after every OMP healer invocation. The record includes the repository, feature, result, latency, model when OMP reports it, input/output/total tokens, OMP conversation id, trace id, service-identity hash, and a SHA-256 hash of the complete healer question. Raw failed-job logs, prompts, and responses are never copied into the monitoring event. Failed deliveries remain in SQLite with exponential retry backoff and are retried at the next daemon tick.
+Samasara queues one `ai_interaction` after every OMP healer invocation and one `telemetry_heartbeat` per daemon tick. AI records contain repository, result, latency, model, provider token counts, conversation and trace IDs, identity hash, and question hash. Raw content never enters Log Analytics. When `SAMASARA_QUESTION_ARCHIVE_ACCOUNT` is configured, exact questions go only to the immutable `ai-question-archive` container and the monitoring event receives the blob reference. Failed event deliveries remain in SQLite with exponential backoff.
 
-The dashboard records only allowlisted semantic controls—view opens, session selection, refreshes, and successful repository changes—through `feature_clicked` events. It never captures arbitrary DOM clicks, labels, repository names, or form content. Browser events use `sendBeacon` with a keepalive `fetch` fallback; the server validates the allowlist, supplies its own timestamp and trace ID, hashes the authenticated identity, and queues the event in the durable outbox.
+The dashboard emits structured `application_request`, `application_dependency`, and `application_exception` logs without query strings or bodies. Its protected Applications, AI Usage, Workflows, and Authentication views query fixed aggregate KQL through the VM managed identity. Semantic browser telemetry remains allowlisted; arbitrary DOM clicks, labels, repository names, and form content are never captured.
 
-Configure the daemon from the Bicep deployment outputs; these values are identifiers, not secrets:
+`infra/github-webhook` validates `X-Hub-Signature-256`, accepts only `workflow_run`, `check_run`, and `workflow_job`, queues quickly, deduplicates `X-GitHub-Delivery`, hashes actors, and writes normalized records to `SamasaraWorkflow_CL`. `.github/workflows/azure-observability.yml` compiles the Bicep, tests normalization, deploys through GitHub OIDC, and publishes the Function package when manually dispatched.
+
+Configure the daemon and dashboard from the Bicep deployment outputs; these values are identifiers, not secrets:
 
 ```bash
 SAMASARA_ENVIRONMENT=prod
 SAMASARA_AZURE_LOGS_ENDPOINT='<logsIngestionEndpoint>'
 SAMASARA_AZURE_DCR_ID='<dataCollectionRuleImmutableId>'
+SAMASARA_AZURE_WORKSPACE_ID='<workspaceCustomerId>'
 SAMASARA_AZURE_MANAGED_IDENTITY_CLIENT_ID='<runtimeIdentityClientId>'
+SAMASARA_QUESTION_ARCHIVE_ACCOUNT='<archiveStorageAccountName>'
+SAMASARA_QUESTION_ARCHIVE_CONTAINER='ai-question-archive'
 ```
 
-The VM must have that user-assigned identity attached. Its DCR `Monitoring Metrics Publisher` role is created when the Bicep deployment uses `deployRoleAssignments=true`.
+The VM must have the output user-assigned identity attached. After deployment, create the `github-webhook-secret` Key Vault secret and register the output `webhookUrl` as an organization GitHub App webhook. These are operator configuration steps; the receiver and resources are deployed by the template.
 
 ```bash
 bun src/index.ts telemetry

@@ -13,7 +13,10 @@ import {
 import { openDb, recentSessions, sessionById, telemetryTotals } from "./db";
 import type { SessionRow } from "./db";
 import { applicationStatus, healReport } from "./management";
+import { queryMonitoringView } from "./azure-monitor";
+import type { MonitoringView } from "./azure-monitor";
 import { monitoringEnvironment, recordMonitoringEvent } from "./observability";
+import { runWithTrace } from "./traffic";
 
 const SECURITY_HEADERS = {
   "Cache-Control": "no-store",
@@ -31,7 +34,18 @@ const DASHBOARD_TELEMETRY_EVENTS: Record<string, true> = {
   "dashboard.refreshed": true,
   "repository.added": true,
   "repository.ignore_rules.updated": true,
+  "dashboard.applications.opened": true,
+  "dashboard.ai_usage.opened": true,
+  "dashboard.workflows.opened": true,
+  "dashboard.authentication.opened": true,
   "repository.removed": true,
+};
+
+const MONITORING_VIEWS: Record<string, true> = {
+  applications: true,
+  ai: true,
+  workflows: true,
+  authentication: true,
 };
 
 class HttpError extends Error {
@@ -68,10 +82,54 @@ function editorAuthorized(request: Request, allowedUser: string | undefined): bo
   return expected.length === got.length && timingSafeEqual(got, expected);
 }
 
+const REQUEST_TRACE_IDS = new WeakMap<Request, string>();
+
 function requestTraceId(request: Request): string {
+  const existing = REQUEST_TRACE_IDS.get(request);
+  if (existing) return existing;
   const traceparent = request.headers.get("traceparent");
   const match = traceparent == null ? null : /^[0-9a-f]{2}-([0-9a-f]{32})-[0-9a-f]{16}-[0-9a-f]{2}$/i.exec(traceparent);
-  return match?.[1]?.toLowerCase() ?? randomUUID().replaceAll("-", "");
+  const traceId = match?.[1]?.toLowerCase() ?? randomUUID().replaceAll("-", "");
+  REQUEST_TRACE_IDS.set(request, traceId);
+  return traceId;
+}
+
+function dashboardRoute(path: string): string {
+  if (/^\/api\/telemetry\/[^/]+$/.test(path)) return "/api/telemetry/:id";
+  if (/^\/api\/repos\/[^/]+\/[^/]+$/.test(path)) return "/api/repos/:owner/:name";
+  return path;
+}
+
+function instrumentDashboardRequest(
+  handler: (request: Request) => Promise<Response>,
+  identityHash: (request: Request) => string | undefined,
+): (request: Request) => Promise<Response> {
+  return async (request) => {
+    const startedAt = performance.now();
+    const traceId = requestTraceId(request);
+    let statusCode = 500;
+    try {
+      const response = await runWithTrace(traceId, () => handler(request));
+      statusCode = response.status;
+      return response;
+    } finally {
+      const path = new URL(request.url).pathname;
+      const userIdHash = identityHash(request);
+      console.info(JSON.stringify({
+        log: "application_request",
+        timestamp: new Date().toISOString(),
+        application: "samasara.dashboard",
+        environment: monitoringEnvironment(),
+        method: request.method,
+        route: dashboardRoute(path),
+        statusCode,
+        durationMs: Math.max(0, Math.round(performance.now() - startedAt)),
+        success: statusCode < 400,
+        traceId,
+        ...(userIdHash ? { userIdHash } : {}),
+      }));
+    }
+  };
 }
 
 export async function startDashboard() {
@@ -120,7 +178,7 @@ export async function startDashboard() {
     hostname: "127.0.0.1",
     port,
     maxRequestBodySize: 32 * 1024,
-    async fetch(request) {
+    fetch: instrumentDashboardRequest(async (request) => {
       try {
         const url = new URL(request.url);
         const origin = origins.get(request.headers.get("host") ?? "");
@@ -152,7 +210,14 @@ export async function startDashboard() {
             }, { headers: SECURITY_HEADERS });
           }
           if (path === "/api/repos") return Response.json(readRepoConfig(), { headers: SECURITY_HEADERS });
-          const monitoringRoute = path === "/api/telemetry" ? "/api/telemetry" : /^\/api\/telemetry\/[^/]+$/.test(path) ? "/api/telemetry/:id" : null;
+          const azureMonitoringMatch = /^\/api\/monitoring\/([^/]+)$/.exec(path);
+          const monitoringRoute = path === "/api/telemetry"
+            ? "/api/telemetry"
+            : /^\/api\/telemetry\/[^/]+$/.test(path)
+              ? "/api/telemetry/:id"
+              : azureMonitoringMatch
+                ? "/api/monitoring/:view"
+                : null;
           if (monitoringRoute && !canViewTelemetry) {
             const identity = requestIdentity(request);
             if (identity != null && telemetryHashKey.length >= 32) {
@@ -174,6 +239,16 @@ export async function startDashboard() {
               if (denied.flush.error) console.error("Dashboard access telemetry delivery deferred");
             }
             throw new HttpError(403, "Tailscale account not authorized");
+          }
+          if (azureMonitoringMatch) {
+            const view = azureMonitoringMatch[1];
+            if (MONITORING_VIEWS[view] !== true) throw new HttpError(404, "Monitoring view not found");
+            try {
+              return Response.json(await queryMonitoringView(view as MonitoringView), { headers: SECURITY_HEADERS });
+            } catch (error) {
+              console.error(`Azure monitoring query failed: ${error instanceof Error ? error.message : String(error)}`);
+              throw new HttpError(502, "Azure monitoring query failed");
+            }
           }
           if (path === "/api/telemetry") {
             const rawBefore = url.searchParams.get("before");
@@ -290,10 +365,22 @@ export async function startDashboard() {
         if (error instanceof HttpError || error instanceof ConfigConflictError) {
           return Response.json({ error: error.message }, { status: error instanceof HttpError ? error.status : 409, headers: SECURITY_HEADERS });
         }
-        console.error("Dashboard request failed; check config and database access");
+        console.error(JSON.stringify({
+          log: "application_exception",
+          application: "samasara.dashboard",
+          environment: monitoringEnvironment(),
+          traceId: requestTraceId(request),
+          route: dashboardRoute(new URL(request.url).pathname),
+          error: error instanceof Error ? error.name : "unknown",
+        }));
         return Response.json({ error: "Unable to read or update application state" }, { status: 500, headers: SECURITY_HEADERS });
       }
-    },
+    }, (request) => {
+      const identity = requestIdentity(request);
+      return identity != null && telemetryHashKey.length >= 32
+        ? createHmac("sha256", telemetryHashKey).update(identity.toLowerCase()).digest("hex")
+        : undefined;
+    }),
     error() {
       return Response.json({ error: "Request failed" }, { status: 500, headers: SECURITY_HEADERS });
     },

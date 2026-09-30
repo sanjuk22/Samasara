@@ -121,6 +121,16 @@ test("public origin allows anonymous reads and blocks writes", async () => {
 
   const strangerTelemetry = await curl(port, "/api/telemetry", { Host: host, "Tailscale-User-Login": "other@example.com" });
   expect(strangerTelemetry.status).toBe(403);
+
+  const anonymousMonitoring = await curl(port, "/api/monitoring/applications", { Host: host });
+  expect(anonymousMonitoring.status).toBe(403);
+
+  const ownerMonitoring = await curl(port, "/api/monitoring/applications", {
+    Host: host,
+    "Tailscale-User-Login": "owner@example.com",
+  });
+  expect(ownerMonitoring.status).toBe(200);
+  expect(ownerMonitoring.body).toEqual({ configured: false, columns: [], rows: [] });
   const monitoringDb = new Database(dbPath);
   const deniedRow = monitoringDb.query("SELECT event_json FROM monitoring_outbox ORDER BY id DESC LIMIT 1").get() as { event_json: string };
   monitoringDb.close();

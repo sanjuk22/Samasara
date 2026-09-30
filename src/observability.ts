@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
   deferMonitoringEvents,
@@ -16,6 +17,7 @@ export const MONITORING_EVENT_NAMES = [
   "logout",
   "session_expired",
   "access_denied",
+  "telemetry_heartbeat",
   "ai_interaction",
   "workflow_started",
   "workflow_completed",
@@ -410,6 +412,72 @@ async function managedIdentityAccessToken(
     throw new Error("managed identity token response did not contain an access token");
   }
   return body.access_token;
+}
+
+type QuestionArchiveOptions = Readonly<{
+  env?: Readonly<Record<string, string | undefined>>;
+  fetch?: typeof fetch;
+  accessToken?: string;
+  now?: Date;
+}>;
+
+export async function archiveQuestion(
+  input: Readonly<{
+    application: string;
+    questionHash: string;
+    sessionId: string;
+    traceId: string;
+    parts: readonly (string | Uint8Array)[];
+  }>,
+  options: QuestionArchiveOptions = {},
+): Promise<string | undefined> {
+  const env = options.env ?? process.env;
+  const account = env.SAMASARA_QUESTION_ARCHIVE_ACCOUNT?.trim() ?? "";
+  if (!account) return undefined;
+  if (!/^[a-z0-9]{3,24}$/.test(account)) throw new MonitoringContractError("Invalid question archive account name");
+  if (!SHA256.test(input.questionHash)) throw new MonitoringContractError("questionHash must be a lowercase SHA-256 hash");
+  const container = env.SAMASARA_QUESTION_ARCHIVE_CONTAINER?.trim() || "ai-question-archive";
+  const now = options.now ?? new Date();
+  const path = `${input.application}/${now.toISOString().slice(0, 10).replaceAll("-", "/")}/${input.questionHash.slice(0, 16)}-${randomUUID()}.json`;
+  const request = options.fetch ?? fetch;
+  const accessToken = options.accessToken ?? await (async () => {
+    const tokenUrl = new URL("http://169.254.169.254/metadata/identity/oauth2/token");
+    tokenUrl.searchParams.set("api-version", "2018-02-01");
+    tokenUrl.searchParams.set("resource", "https://storage.azure.com/");
+    const clientId = env.SAMASARA_AZURE_MANAGED_IDENTITY_CLIENT_ID?.trim();
+    if (clientId) tokenUrl.searchParams.set("client_id", clientId);
+    const response = await request(tokenUrl, { headers: { Metadata: "true" }, signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`managed identity token request failed with HTTP ${response.status}`);
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("access_token" in body) || typeof body.access_token !== "string") {
+      throw new Error("managed identity token response did not contain an access token");
+    }
+    return body.access_token;
+  })();
+  const endpoint = new URL(`https://${account}.blob.core.windows.net/${encodeURIComponent(container)}/${path.split("/").map(encodeURIComponent).join("/")}`);
+  const question = input.parts.map((part) => typeof part === "string" ? part : new TextDecoder().decode(part)).join("\n\u001e\n");
+  const response = await request(endpoint, {
+    method: "PUT",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+      "If-None-Match": "*",
+      "x-ms-blob-type": "BlockBlob",
+      "x-ms-version": "2023-11-03",
+    },
+    body: JSON.stringify({
+      schemaVersion: 1,
+      archivedAt: now.toISOString(),
+      application: input.application,
+      questionHash: input.questionHash,
+      sessionId: input.sessionId,
+      traceId: input.traceId,
+      question,
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`question archive upload failed with HTTP ${response.status}`);
+  return `${container}/${path}`;
 }
 
 export function queueMonitoringEvent(

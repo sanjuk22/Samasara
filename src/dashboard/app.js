@@ -26,6 +26,8 @@
     csrfRequest: null,
     canEdit: false,
     canMonitor: false,
+    monitoringBusy: {},
+    monitoringLoaded: {},
   };
   const statusCards = new Map();
   const sessionCards = new Map();
@@ -39,6 +41,7 @@
     reverted: "negative", denied_policy: "negative", error: "negative",
     running: "info", pending: "warning", follow_up: "warning", head_moved: "warning",
   };
+  const monitoringViews = new Set(["applications", "ai", "workflows", "authentication"]);
 
   function text(node, value) {
     const next = value == null ? "" : String(value);
@@ -160,6 +163,55 @@
       tab.tabIndex = selected ? 0 : -1;
       $(`view-${tab.dataset.view}`).hidden = !selected;
       if (selected && focusTab) tab.focus();
+    }
+    if (monitoringViews.has(view) && state.canMonitor && !state.monitoringLoaded[view]) {
+      void loadMonitoringView(view);
+    }
+  }
+
+  function monitoringValue(value) {
+    if (value == null || value === "") return "—";
+    if (typeof value === "number") return count(value);
+    if (typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)) return timestamp(value);
+    return String(value);
+  }
+
+  function renderMonitoringView(view, data) {
+    const head = $(`${view}-head`);
+    const body = $(`${view}-body`);
+    head.replaceChildren();
+    body.replaceChildren();
+    if (!data.configured) {
+      notice(`${view}-notice`, "Azure Monitor queries are not configured on this server.", "info");
+      return;
+    }
+    if (!data.rows.length) {
+      notice(`${view}-notice`, "No records were found in the last 24 hours.", "info");
+      return;
+    }
+    const headingRow = el("tr");
+    for (const column of data.columns) headingRow.append(el("th", "", column));
+    head.append(headingRow);
+    for (const row of data.rows) {
+      const tableRow = el("tr");
+      for (const column of data.columns) tableRow.append(el("td", "", monitoringValue(row[column])));
+      body.append(tableRow);
+    }
+    notice(`${view}-notice`);
+  }
+
+  async function loadMonitoringView(view, quiet = false) {
+    if (!monitoringViews.has(view) || state.monitoringBusy[view]) return;
+    state.monitoringBusy[view] = true;
+    if (!quiet) notice(`${view}-notice`, "Loading Azure Monitor data…");
+    try {
+      const data = await api(`/api/monitoring/${view}`);
+      renderMonitoringView(view, data);
+      state.monitoringLoaded[view] = true;
+    } catch (error) {
+      notice(`${view}-notice`, error.message, "error");
+    } finally {
+      state.monitoringBusy[view] = false;
     }
   }
 
@@ -498,8 +550,8 @@
     const next = canMonitor === true;
     const changed = state.canMonitor !== next;
     state.canMonitor = next;
-    $("tab-telemetry").hidden = !next;
-    if (!next && state.view === "telemetry") activateView("status");
+    for (const view of ["telemetry", ...monitoringViews]) $(`tab-${view}`).hidden = !next;
+    if (!next && (state.view === "telemetry" || monitoringViews.has(state.view))) activateView("status");
     if (next && changed && !state.telemetryLoaded) void loadTelemetry();
   }
 
@@ -703,6 +755,7 @@
       void loadDetail();
     }
     if (state.view === "repos") void loadRepos();
+    if (monitoringViews.has(state.view)) void loadMonitoringView(state.view);
   });
   $("sessions-latest").addEventListener("click", () => void loadTelemetry([null]));
   $("sessions-newer").addEventListener("click", () => void loadTelemetry(state.pages.slice(0, -1)));
@@ -729,5 +782,6 @@
     void refreshStatus(true);
     if (state.canMonitor && state.pages.length === 1) void loadTelemetry(state.pages, true);
     if (state.canMonitor && state.selectedId != null && (!state.detail || state.detail.outcome === "running")) void loadDetail(true);
+    if (state.canMonitor && monitoringViews.has(state.view)) void loadMonitoringView(state.view, true);
   }, 10_000);
 })();

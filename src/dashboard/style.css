@@ -45,7 +45,7 @@ code { overflow-wrap: anywhere; }
 .muted { color: var(--muted); }
 .small { font-size: .8rem; }
 .navigation { display: flex; align-items: center; justify-content: space-between; gap: .8rem; border-bottom: 1px solid var(--border); margin-bottom: 2rem; }
-.tabs { display: flex; gap: 1.7rem; }
+.tabs { display: flex; gap: 1.2rem; overflow-x: auto; }
 .tab { position: relative; border: 0; background: none; color: var(--muted); padding: .85rem 0; font-size: .9rem; font-weight: 600; min-height: 44px; }
 .tab[aria-selected="true"] { color: var(--accent); }
 .tab[aria-selected="true"]::after { content: ""; position: absolute; height: 3px; bottom: -1px; left: 0; right: 0; background: var(--accent); border-radius: 3px 3px 0 0; }
@@ -124,6 +124,11 @@ code { overflow-wrap: anywhere; }
 .pattern-list li { border: 1px solid var(--border); border-radius: 4px; background: var(--subtle); padding: .15rem .45rem; max-width: 100%; }
 .pattern-list code { font-size: .73rem; }
 .repositories-layout { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 1.6rem; align-items: start; }
+.monitoring-table { overflow-x: auto; }
+.monitoring-table table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.monitoring-table th, .monitoring-table td { padding: .7rem .8rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.monitoring-table th { color: var(--muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
+.monitoring-table tbody tr:last-child td { border-bottom: 0; }
 .repository-list { display: flex; flex-direction: column; gap: .8rem; margin-bottom: 1rem; }
 .repository-card { padding: 1.05rem 1.2rem; }
 .repository-top { display: flex; align-items: flex-start; justify-content: space-between; gap: .5rem; }

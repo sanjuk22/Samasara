@@ -27,6 +27,10 @@
           <button id="tab-status" class="tab" type="button" role="tab" aria-selected="true" aria-controls="view-status" data-view="status" data-telemetry-event="dashboard.status.opened">Status</button>
           <button id="tab-telemetry" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-telemetry" tabindex="-1" data-view="telemetry" data-telemetry-event="dashboard.telemetry.opened">Telemetry</button>
           <button id="tab-repos" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-repos" tabindex="-1" data-view="repos" data-telemetry-event="dashboard.repositories.opened">Repositories</button>
+          <button id="tab-applications" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-applications" tabindex="-1" data-view="applications" data-telemetry-event="dashboard.applications.opened" hidden>Applications</button>
+          <button id="tab-ai" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-ai" tabindex="-1" data-view="ai" data-telemetry-event="dashboard.ai_usage.opened" hidden>AI Usage</button>
+          <button id="tab-workflows" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-workflows" tabindex="-1" data-view="workflows" data-telemetry-event="dashboard.workflows.opened" hidden>Workflows</button>
+          <button id="tab-authentication" class="tab" type="button" role="tab" aria-selected="false" aria-controls="view-authentication" tabindex="-1" data-view="authentication" data-telemetry-event="dashboard.authentication.opened" hidden>Authentication</button>
         </div>
         <button id="refresh" class="button secondary compact" type="button" data-telemetry-event="dashboard.refreshed">Refresh view</button>
       </nav>
@@ -125,6 +129,30 @@
               </div>
             </section>
           </div>
+        </section>
+
+        <section id="view-applications" role="tabpanel" aria-labelledby="tab-applications" tabindex="0" hidden>
+          <div class="section-heading"><div><h2>Applications</h2><p class="muted">Request volume, failures, and latency percentiles from Application Insights over the last 24 hours.</p></div></div>
+          <p id="applications-notice" class="notice" role="status" aria-live="polite">Open this view to load application telemetry.</p>
+          <div class="card monitoring-table"><table><thead id="applications-head"></thead><tbody id="applications-body"></tbody></table></div>
+        </section>
+
+        <section id="view-ai" role="tabpanel" aria-labelledby="tab-ai" tabindex="0" hidden>
+          <div class="section-heading"><div><h2>AI Usage</h2><p class="muted">Attempts, failures, latency, and provider-reported token totals over the last 24 hours.</p></div></div>
+          <p id="ai-notice" class="notice" role="status" aria-live="polite">Open this view to load AI usage.</p>
+          <div class="card monitoring-table"><table><thead id="ai-head"></thead><tbody id="ai-body"></tbody></table></div>
+        </section>
+
+        <section id="view-workflows" role="tabpanel" aria-labelledby="tab-workflows" tabindex="0" hidden>
+          <div class="section-heading"><div><h2>Workflows</h2><p class="muted">GitHub workflow volume, failures, duration, and last delivery over the last 24 hours.</p></div></div>
+          <p id="workflows-notice" class="notice" role="status" aria-live="polite">Open this view to load workflow telemetry.</p>
+          <div class="card monitoring-table"><table><thead id="workflows-head"></thead><tbody id="workflows-body"></tbody></table></div>
+        </section>
+
+        <section id="view-authentication" role="tabpanel" aria-labelledby="tab-authentication" tabindex="0" hidden>
+          <div class="section-heading"><div><h2>Authentication</h2><p class="muted">Privacy-safe authentication transitions and denied access over the last 24 hours.</p></div></div>
+          <p id="authentication-notice" class="notice" role="status" aria-live="polite">Open this view to load authentication telemetry.</p>
+          <div class="card monitoring-table"><table><thead id="authentication-head"></thead><tbody id="authentication-body"></tbody></table></div>
         </section>
 
         <section id="view-repos" role="tabpanel" aria-labelledby="tab-repos" tabindex="0" hidden>

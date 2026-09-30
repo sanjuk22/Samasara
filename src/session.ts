@@ -18,7 +18,7 @@ import {
 import { fetchFailedJobLog, pollRepo, resolveGitIdentity, type GitIdentity } from "./github";
 import { notifyHuman } from "./notify";
 import { buildPriorHealContext, extractOmpReasoning } from "./telemetry";
-import { monitoringEnvironment, recordMonitoringEvent } from "./observability";
+import { archiveQuestion, monitoringEnvironment, recordMonitoringEvent } from "./observability";
 
 const BUN_BIN = "/home/opc/.bun/bin";
 const SAMASARA_ACTOR_HASH = createHash("sha256").update("service:samasara").digest("hex");
@@ -407,6 +407,7 @@ export async function runSession(opts: {
       appendEvent(db, id, "omp_resume", { ompSessionId: opts.ompSessionId });
     }
     const questionHasher = createHash("sha256");
+    const questionParts: Array<string | Uint8Array> = [];
     const hashQuestionPart = (value: string | Uint8Array) => {
       questionHasher.update(value);
       questionHasher.update("\u001e");
@@ -414,7 +415,9 @@ export async function runSession(opts: {
     if (logPath) {
       ompArgs.push(`@${logPath}`);
       try {
-        hashQuestionPart(readFileSync(logPath));
+        const failedLog = readFileSync(logPath);
+        hashQuestionPart(failedLog);
+        questionParts.push(failedLog);
       } catch {
         /* the missing attachment is already represented by logs_fetched */
       }
@@ -423,12 +426,14 @@ export async function runSession(opts: {
     if (priorHealContext) {
       ompArgs.push(priorHealContext);
       hashQuestionPart(priorHealContext);
+      questionParts.push(priorHealContext);
     }
     const instruction = iteration > 1
       ? `HEAD ${sha} on ${config.ref} is still red after the previous land. New failing checks: ${originalRed.length > 0 ? originalRed.join("; ") : "unknown"}. Your earlier patch is already in this checkout and in this session. Reproduce the new failure, patch, re-run until green. Do not commit or push.`
       : `HEAD ${sha} on ${config.ref} is red. Reproduce the failed job, patch, re-run until green. Do not commit or push.`;
     ompArgs.push(instruction);
     hashQuestionPart(instruction);
+    questionParts.push(instruction);
     const questionHash = questionHasher.digest("hex");
     const traceId = randomBytes(16).toString("hex");
     const ompEnv = gitEnv();
@@ -443,6 +448,18 @@ export async function runSession(opts: {
     const sandbox_s = Math.round((Date.now() - ompStart) / 1000);
     writeFileSync(join(config.logDir, `${id}.omp.jsonl`), omp.stdout);
     const usage = parseOmpJsonl(db, id, omp.stdout);
+    let questionArchiveRef: string | undefined;
+    try {
+      questionArchiveRef = await archiveQuestion({
+        application: "samasara",
+        questionHash,
+        sessionId: usage.ompSessionId ?? String(id),
+        traceId,
+        parts: questionParts,
+      });
+    } catch (error) {
+      console.error(`${key} session ${id} question archive failed ${error instanceof Error ? error.name : "unknown"}`);
+    }
     const attempts = iteration;
     if (usage.reasoning) appendEvent(db, id, "reasoning", { text: usage.reasoning });
     try {
@@ -467,7 +484,11 @@ export async function runSession(opts: {
           promptTokens: usage.tokens_in,
           completionTokens: usage.tokens_out,
           questionHash,
-          attributes: { iteration, exit_code: omp.code },
+          attributes: {
+            iteration,
+            exit_code: omp.code,
+            ...(questionArchiveRef ? { archive_ref: questionArchiveRef } : {}),
+          },
         },
       );
       if (recorded.flush.error) console.error(`${key} session ${id} telemetry deferred ${recorded.flush.error}`);

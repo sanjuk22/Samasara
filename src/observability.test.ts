@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { openDb } from "./db";
 import {
+  archiveQuestion,
   azureMonitoringSettings,
   createMonitoringEvent,
   flushMonitoringOutbox,
@@ -39,7 +40,7 @@ test("creates a normalized monitoring event and derives total tokens", () => {
       promptTokens: 120,
       completionTokens: 40,
       questionHash: "b".repeat(64),
-      attributes: { office: "ocio", cached: false },
+      attributes: { office: "ocio", cached: false, archive_ref: "ai-question-archive/path.json" },
     },
     new Date("2026-09-24T14:00:01.000Z"),
   );
@@ -58,7 +59,7 @@ test("creates a normalized monitoring event and derives total tokens", () => {
     completionTokens: 40,
     totalTokens: 160,
     commitSha: "abcdef1234567",
-    attributes: { office: "ocio", cached: false },
+    attributes: { office: "ocio", cached: false, archive_ref: "ai-question-archive/path.json" },
   });
   expect(Object.isFrozen(event)).toBe(true);
   expect(Object.isFrozen(event.attributes)).toBe(true);
@@ -202,4 +203,36 @@ test("validates monitoring environment and complete Azure settings", () => {
   expect(() => azureMonitoringSettings({ SAMASARA_AZURE_LOGS_ENDPOINT: "https://logs.example.test" })).toThrow(
     "SAMASARA_AZURE_LOGS_ENDPOINT and SAMASARA_AZURE_DCR_ID must be configured together",
   );
+});
+
+test("archives exact healer questions outside monitoring events", async () => {
+  let body = "";
+  let url = "";
+  const request = (async (input: string | URL | Request, init?: RequestInit) => {
+    url = String(input);
+    body = String(init?.body);
+    return new Response(null, { status: 201 });
+  }) as typeof fetch;
+  const reference = await archiveQuestion({
+    application: "samasara",
+    questionHash: "f".repeat(64),
+    sessionId: "session-1",
+    traceId: "trace-1",
+    parts: ["failed log", "instruction"],
+  }, {
+    env: { SAMASARA_QUESTION_ARCHIVE_ACCOUNT: "archiveaccount" },
+    accessToken: "token",
+    fetch: request,
+    now: new Date("2026-09-30T12:00:00Z"),
+  });
+
+  expect(reference).toStartWith("ai-question-archive/samasara/2026/09/30/ffffffffffffffff-");
+  expect(url).toStartWith("https://archiveaccount.blob.core.windows.net/ai-question-archive/samasara/2026/09/30/");
+  expect(JSON.parse(body)).toMatchObject({
+    application: "samasara",
+    questionHash: "f".repeat(64),
+    sessionId: "session-1",
+    traceId: "trace-1",
+    question: "failed log\n\u001e\ninstruction",
+  });
 });

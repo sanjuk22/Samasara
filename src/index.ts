@@ -29,7 +29,8 @@ import { runSession } from "./session";
 import { formatHealReport } from "./telemetry";
 import { applicationStatus, healReport, isSamasaraProcess, LOCK_PATH, lockPid, processIsAlive } from "./management";
 import { startDashboard } from "./dashboard";
-import { flushMonitoringOutbox } from "./observability";
+import { monitoringEnvironment, recordMonitoringEvent } from "./observability";
+import { installDependencyTelemetry } from "./traffic";
 
 const USAGE = `usage: bun src/index.ts <start|stop|once|status|telemetry|dashboard|notify-test|repo>
   start
@@ -48,8 +49,12 @@ export async function tick(
   token: string,
   opts: { force?: boolean } = {},
 ): Promise<void> {
-  const monitoring = await flushMonitoringOutbox(db);
-  if (monitoring.error) console.error(`monitoring flush deferred ${monitoring.error}`);
+  const monitoring = await recordMonitoringEvent(
+    db,
+    { application: "samasara", environment: monitoringEnvironment() },
+    { eventName: "telemetry_heartbeat", feature: "daemon.tick", result: "success" },
+  );
+  if (monitoring.flush.error) console.error(`monitoring flush deferred ${monitoring.flush.error}`);
   for (const repo of config.repos) {
     const key = repoKey(repo);
     const t0 = Date.now();
@@ -322,6 +327,7 @@ function runRepoCommand(argv: string[]): void {
 }
 
 async function main(): Promise<void> {
+  installDependencyTelemetry();
   const cmd = process.argv[2];
   if (cmd === "dashboard") {
     await startDashboard();

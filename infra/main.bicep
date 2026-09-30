@@ -89,3 +89,5 @@ output runtimeIdentityResourceId string = observability.outputs.runtimeIdentityR
 output runtimeIdentityClientId string = observability.outputs.runtimeIdentityClientId
 output keyVaultName string = observability.outputs.keyVaultName
 output archiveStorageAccountName string = observability.outputs.archiveStorageAccountName
+output webhookFunctionName string = observability.outputs.webhookFunctionName
+output webhookUrl string = observability.outputs.webhookUrl
